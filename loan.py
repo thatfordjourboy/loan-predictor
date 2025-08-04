@@ -11,6 +11,13 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.impute import SimpleImputer
 
+from sklearn.tree import plot_tree
+from sklearn.tree import DecisionTreeRegressor, DecisionTreeClassifier, export_graphviz
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+from sklearn.metrics import confusion_matrix, mean_squared_error
+from sklearn import metrics
+from sklearn.metrics import confusion_matrix, classification_report, precision_score
+
 df = pd.read_csv("Loan_default.csv")
 
 # --------------------- PAGE FUNCTIONS --------------------- #
@@ -126,7 +133,7 @@ other_pages = {
 
 # Sidebar UI
 with st.sidebar:
-    st.markdown("### Predict Loan Eligibility")
+    st.markdown("### Group 5 - SML@2025")
     selected_main = st.radio("Start Here", list(prediction_page.keys()))
 
     st.markdown("___")
