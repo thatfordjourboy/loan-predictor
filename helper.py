@@ -1,6 +1,8 @@
 import time
+from time import perf_counter
 import pandas as pd
 import streamlit as st
+
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
@@ -14,9 +16,7 @@ def show_dataset_info(df: pd.DataFrame) -> None:
     total_records = f"{df.shape[0]:,}"
     total_features = df.shape[1]
     missing_values = f"{df.isnull().sum().sum():,}"
-    default_rate = (
-        f"{(df['Default'] == 1).mean() * 100:.1f}%" if 'Default' in df.columns else "N/A"
-    )
+    default_rate = (f"{(df['Default'] == 1).mean() * 100:.1f}%" if 'Default' in df.columns else "N/A")
 
     st.markdown(
         f"""
@@ -56,11 +56,7 @@ def show_dataset_info(df: pd.DataFrame) -> None:
     st.caption(f"Showing the complete dataset with {df.shape[0]} rows and {df.shape[1]} columns")
 
     # Display the full dataset with scrolling capability
-    st.dataframe(
-        df,
-        use_container_width=True,
-        height=400,  # Set a fixed height to enable scrolling
-    )
+    st.dataframe(df,use_container_width=True,height=400)
 
     # Column information
     with st.expander("🔍 Column Details"):
@@ -233,12 +229,19 @@ def render_preprocessing_steps() -> None:
 
 
 def train_and_evaluate_models(
-    X_train,
-    y_train,
-    X_test,
-    y_test,
-    feature_names,
-) -> tuple:
+    X_train, y_train, X_test, y_test, feature_names,
+    on_step=None,   # 👈 callback that receives text updates (e.g., status.write)
+):
+    def step(label: str):
+        if on_step: on_step(f"▶️ {label}…")
+        return (label, perf_counter())
+
+    def done(token):
+        label, t0 = token
+        elapsed = perf_counter() - t0
+        if on_step: on_step(f"✅ {label} ({elapsed:.2f}s)")
+
+    # containers
     results_dict = {}
     best_model_name = None
     best_model_object = None
@@ -247,31 +250,23 @@ def train_and_evaluate_models(
     feature_importance_df = None
     best_f1_score = -1
 
-    # Hyperparameter grids
-    dt_params = {
-        "max_depth": [4, 6, 8],
-        "min_samples_split": [5, 10],
-    }
-    rf_params = {
-        "n_estimators": [50, 100],
-        "max_depth": [5, 8],
-    }
+    # --- Hyperparameter grids ---
+    dt_params = {"max_depth": [4, 6, 8], "min_samples_split": [5, 10]}
+    rf_params = {"n_estimators": [50, 100], "max_depth": [5, 8]}
 
-    # Train Decision Tree models
+    # --- Decision Tree block (timed) ---
+    tok = step("Training Decision Trees")
     for max_depth in dt_params["max_depth"]:
         for min_split in dt_params["min_samples_split"]:
             name = f"Decision Tree (depth={max_depth}, split={min_split})"
-            model = DecisionTreeClassifier(
-                max_depth=max_depth, min_samples_split=min_split, random_state=42
-            )
+            model = DecisionTreeClassifier(max_depth=max_depth, min_samples_split=min_split, random_state=42)
 
-            start_time = time.time()
+            t_fit = perf_counter()
             model.fit(X_train, y_train)
-            duration = time.time() - start_time
+            fit_time = perf_counter() - t_fit
 
             y_train_pred = model.predict(X_train)
             y_test_pred = model.predict(X_test)
-
             try:
                 y_scores = model.predict_proba(X_test)[:, 1]
             except AttributeError:
@@ -285,10 +280,13 @@ def train_and_evaluate_models(
                 "recall": recall_score(y_test, y_test_pred, zero_division=0),
                 "f1_score": f1_score(y_test, y_test_pred, zero_division=0),
                 "auc": roc_auc_score(y_test, y_scores),
-                "training_time": duration,
+                "training_time": fit_time,
                 "y_pred": y_test_pred,
                 "conf_matrix": confusion_matrix(y_test, y_test_pred),
             }
+
+            if on_step:
+                on_step(f"   • {name} done ({fit_time:.2f}s) — F1={results_dict[name]['f1_score']:.3f}")
 
             if results_dict[name]["f1_score"] > best_f1_score:
                 best_model_name = name
@@ -299,27 +297,25 @@ def train_and_evaluate_models(
 
                 if hasattr(model, "feature_importances_"):
                     importance = model.feature_importances_
-                    feature_importance_df = (
-                        pd.DataFrame({"Feature": feature_names, "Importance": importance})
-                        .sort_values(by="Importance", ascending=False)
-                        .reset_index(drop=True)
-                    )
+                    feature_importance_df = pd.DataFrame({
+                        "Feature": feature_names,
+                        "Importance": importance
+                    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
+    done(tok)
 
-    # Train Random Forest models
+    # --- Random Forest block (timed) ---
+    tok = step("Training Random Forests")
     for n_estimators in rf_params["n_estimators"]:
         for max_depth in rf_params["max_depth"]:
             name = f"Random Forest (n={n_estimators}, depth={max_depth})"
-            model = RandomForestClassifier(
-                n_estimators=n_estimators, max_depth=max_depth, random_state=42
-            )
+            model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
 
-            start_time = time.time()
+            t_fit = perf_counter()
             model.fit(X_train, y_train)
-            duration = time.time() - start_time
+            fit_time = perf_counter() - t_fit
 
             y_train_pred = model.predict(X_train)
             y_test_pred = model.predict(X_test)
-
             try:
                 y_scores = model.predict_proba(X_test)[:, 1]
             except AttributeError:
@@ -333,10 +329,13 @@ def train_and_evaluate_models(
                 "recall": recall_score(y_test, y_test_pred, zero_division=0),
                 "f1_score": f1_score(y_test, y_test_pred, zero_division=0),
                 "auc": roc_auc_score(y_test, y_scores),
-                "training_time": duration,
+                "training_time": fit_time,
                 "y_pred": y_test_pred,
                 "conf_matrix": confusion_matrix(y_test, y_test_pred),
             }
+
+            if on_step:
+                on_step(f"   • {name} done ({fit_time:.2f}s) — F1={results_dict[name]['f1_score']:.3f}")
 
             if results_dict[name]["f1_score"] > best_f1_score:
                 best_model_name = name
@@ -347,11 +346,17 @@ def train_and_evaluate_models(
 
                 if hasattr(model, "feature_importances_"):
                     importance = model.feature_importances_
-                    feature_importance_df = (
-                        pd.DataFrame({"Feature": feature_names, "Importance": importance})
-                        .sort_values(by="Importance", ascending=False)
-                        .reset_index(drop=True)
-                    )
+                    feature_importance_df = pd.DataFrame({
+                        "Feature": feature_names,
+                        "Importance": importance
+                    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
+    done(tok)
+
+    # --- Selection & packaging (timed) ---
+    tok = step("Selecting best model & packaging results")
+    # nothing to compute here beyond what we tracked; timing for completeness
+    time.sleep(0.01)  # tiny pause so timer isn't 0.00s; optional
+    done(tok)
 
     return (
         results_dict,

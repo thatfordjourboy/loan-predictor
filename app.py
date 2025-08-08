@@ -5,10 +5,11 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import streamlit as st
+from streamlit import set_page_config
 from streamlit_option_menu import option_menu
 import plotly.express as px
 
-# Import helpers
+# Import helper functions
 from helper import show_dataset_info, run_preprocessing, render_preprocessing_steps, train_and_evaluate_models
 
 def load_css(css_file: str) -> None:
@@ -18,6 +19,7 @@ def load_css(css_file: str) -> None:
     except FileNotFoundError:
         st.warning(f"CSS file '{css_file}' not found. Styles may not apply correctly.")
 
+set_page_config(layout="wide",page_title="Loan Predict@G5", initial_sidebar_state="auto")
 
 # --- Load Dataset ---
 @st.cache_data
@@ -176,19 +178,19 @@ def data_overview() -> None:
         insight_blocks = [
             {
                 "title": "Strong Positive Correlation",
-                "text": "Applicant Income and Loan Amount show strong correlation (0.57), indicating higher income applicants request larger loans.",
+                "text": "There are no strong positive correlations in this dataset because the absolute values are all very close to zero. This suggests that none of the numerical features vary strongly together. In practical terms, features like Income and LoanAmount or CreditScore and LoanTerm are essentially independent in this dataset.",
                 "color": "#e8f0fe",
                 "title_color": "#1967d2",
             },
             {
                 "title": "Asset-Income Relationship",
-                "text": "Total Assets correlate moderately with both Applicant Income (0.43) and Loan Amount (0.38), showing wealth consistency.",
+                "text": "If we treat Income as a proxy for assets, the correlation values between Income and all other variables are near zero (e.g., Income–LoanAmount ≈ –0.00087, Income–MonthsEmployed ≈ 0.0027). This implies that higher income does not consistently align with larger loan amounts or longer employment durations in this data — at least not in a linear sense.",
                 "color": "#e6f4ea",
                 "title_color": "#137333",
             },
             {
                 "title": "Independence Noted",
-                "text": "Co-applicant Income shows weak correlation with Applicant Income (0.19), suggesting independent income sources.",
+                "text": "The consistently low correlation magnitudes (close to 0) between most pairs, such as CreditScore and Income (≈ –0.0014) or Age and LoanAmount (≈ –0.0022), indicate that these variables behave independently. This suggests that each feature may contribute unique, uncorrelated information to the model, which can be useful for machine learning algorithms that benefit from independent predictors.",
                 "color": "#fef7e0",
                 "title_color": "#d39e00",
             },
@@ -235,28 +237,32 @@ def model_page() -> None:
     # Trigger training if not already in session state
     if "results_dict" not in st.session_state:
         if st.button("🚀 Train Models", type="primary"):
-            with st.spinner("Training models..."):
+            with st.status("Training models...", expanded=True) as status:
+                def log(msg: str):
+                    status.write(msg)  # each stage & model shows with elapsed seconds
+
                 results_dict, best_name, best_model, y_pred_best, cm, feat_imp_df = train_and_evaluate_models(
                     st.session_state["X_train"],
                     st.session_state["y_train"],
                     st.session_state["X_test"],
                     st.session_state["y_test"],
                     st.session_state["preprocessor"].get_feature_names_out(),
+                    on_step=log,  # 👈 feed progress messages into the status box
                 )
 
-                st.session_state.update(
-                    {
-                        "trained_models": {name: res["model"] for name, res in results_dict.items()},
-                        "results_dict": results_dict,
-                        "best_model_name": best_name,
-                        "best_model": best_model,
-                        "y_pred_best": y_pred_best,
-                        "conf_matrix": cm,
-                        "feature_importance_df": feat_imp_df,
-                    }
-                )
+                st.session_state.update({
+                    "trained_models": {name: res["model"] for name, res in results_dict.items()},
+                    "results_dict": results_dict,
+                    "best_model_name": best_name,
+                    "best_model": best_model,
+                    "y_pred_best": y_pred_best,
+                    "conf_matrix": cm,
+                    "feature_importance_df": feat_imp_df,
+                })
 
+                status.update(label=f"✅ Model training complete! Best: {best_name}", state="complete", expanded=False)
                 st.success(f"✅ Models trained. Best model: {best_name}")
+
         return
 
     # Extract results from session state
@@ -659,7 +665,6 @@ def main() -> None:
         preprocessing_page()
     elif selected_page == "Model Training & Evaluation":
         model_page()
-
 
 if __name__ == "__main__":
     main()
