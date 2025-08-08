@@ -1,34 +1,36 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
-from datetime import datetime
 import os
-import time
-from pandas.api.types import CategoricalDtype
+from datetime import datetime
 
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
-from sklearn.tree import plot_tree
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+import streamlit as st
 from streamlit_option_menu import option_menu
+import plotly.express as px
+
+# Import helpers
+from helper import show_dataset_info, run_preprocessing, render_preprocessing_steps, train_and_evaluate_models
+
+def load_css(css_file: str) -> None:
+    try:
+        with open(css_file) as f:
+            st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    except FileNotFoundError:
+        st.warning(f"CSS file '{css_file}' not found. Styles may not apply correctly.")
+
 
 # --- Load Dataset ---
-df = pd.read_csv("Loan_default.csv")
+@st.cache_data
+def load_data(path: str) -> pd.DataFrame:
+    return pd.read_csv(path)
 
-# group numerical and categorical columns separately
-numeric_cols = df.select_dtypes(include=['int64', 'float64']).drop(columns=['Default'], errors='ignore').columns.tolist()
-cat_cols = df.select_dtypes(include='object').columns.tolist()
+df = load_data("Loan_default.csv")
 
-# --- Data Overview Page ---
-def data_overview():
+numeric_cols = (df.select_dtypes(include=["int64", "float64"]).drop(columns=["Default"], errors="ignore").columns.tolist())
+cat_cols = df.select_dtypes(include="object").columns.tolist()
+
+
+def data_overview() -> None:
     st.title("Dataset Overview")
     st.caption("Comprehensive analysis of the loan dataset with statistical insights and visualizations.")
 
@@ -42,8 +44,8 @@ def data_overview():
     with col2:
         st.metric("Features", f"{df.shape[1] - 1}", "Input variables")
     with col3:
-        if 'Default' in df.columns:
-            approval_rate = (df['Default'] == 0).mean() * 100
+        if "Default" in df.columns:
+            approval_rate = (df["Default"] == 0).mean() * 100
             st.metric("Approval Rate", f"{approval_rate:.1f}%", "Historical approval rate")
     with col4:
         st.metric("Last Updated", last_updated, "Data freshness")
@@ -51,8 +53,7 @@ def data_overview():
     st.markdown("---")
 
     # Tabs
-    tab1, tab2, tab3= st.tabs(
-        ["📐 Statistical Summary", "📊 Distributions", "🔗 Correlations"])
+    tab1, tab2, tab3 = st.tabs(["📐 Statistical Summary", "📊 Distributions", "🔗 Correlations"])
 
     # Statistical summary on tab1
     with tab1:
@@ -60,18 +61,20 @@ def data_overview():
         st.caption("Descriptive statistics for numerical variables")
 
         # Get describe output and transpose
-        stats = df[numeric_cols].describe(percentiles=[.25, .5, .75]).T
+        stats = df[numeric_cols].describe(percentiles=[0.25, 0.5, 0.75]).T
 
         # Rename and reorder columns
-        stats = stats.rename(columns={
-            "mean": "Mean",
-            "std": "Std Dev",
-            "min": "Min",
-            "25%": "Q1",
-            "50%": "Median",
-            "75%": "Q3",
-            "max": "Max"
-        })[["Mean", "Median", "Std Dev", "Min", "Q1", "Q3", "Max"]]
+        stats = stats.rename(
+            columns={
+                "mean": "Mean",
+                "std": "Std Dev",
+                "min": "Min",
+                "25%": "Q1",
+                "50%": "Median",
+                "75%": "Q3",
+                "max": "Max",
+            }
+        )[["Mean", "Median", "Std Dev", "Min", "Q1", "Q3", "Max"]]
 
         # Round and reset index for clean display
         stats = stats.round(1).reset_index().rename(columns={"index": "Feature"})
@@ -82,44 +85,53 @@ def data_overview():
         st.caption("Distribution and outlier analysis for key numerical features")
 
         # Create 3 columns
-        col1, col2, col3 = st.columns(3)
-        columns = [col1, col2, col3]
+        col1b, col2b, col3b = st.columns(3)
+        columns = [col1b, col2b, col3b]
 
         # Render a selectbox + boxplot + stats in each column
         for i, col in enumerate(columns):
             with col:
-                feature = st.selectbox(f"Feature {i + 1}", options=numeric_cols, index=i, key=f"box-feature-{i}")
+                feature = st.selectbox(
+                    f"Feature {i + 1}", options=numeric_cols, index=i, key=f"box-feature-{i}"
+                )
 
                 # Plot
                 fig, ax = plt.subplots(figsize=(3, 3))
-                ax.boxplot(df[feature].dropna(), vert=True, patch_artist=True,
-                           boxprops=dict(facecolor="#E0ECF8", color="#4F81BD"),
-                           medianprops=dict(color="red"))
+                ax.boxplot(
+                    df[feature].dropna(),
+                    vert=True,
+                    patch_artist=True,
+                    boxprops=dict(facecolor="#E0ECF8", color="#4F81BD"),
+                    medianprops=dict(color="red"),
+                )
                 ax.set_title(feature, fontsize=10)
                 ax.set_xticks([])
 
                 st.pyplot(fig)
 
                 # Stats
-                desc = df[feature].describe(percentiles=[.25, .5, .75]).round(1)
-                st.markdown(f"""
-                <div style="font-size: 13px;">
-                <strong>Min:</strong> {desc['min']}<br>
-                <strong>Q1:</strong> {desc['25%']}<br>
-                <strong>Median:</strong> {desc['50%']}<br>
-                <strong>Q3:</strong> {desc['75%']}<br>
-                <strong>Max:</strong> {desc['max']}
-                </div>
-                """, unsafe_allow_html=True)
+                desc = df[feature].describe(percentiles=[0.25, 0.5, 0.75]).round(1)
+                st.markdown(
+                    f"""
+                    <div style="font-size: 13px;">
+                    <strong>Min:</strong> {desc['min']}<br>
+                    <strong>Q1:</strong> {desc['25%']}<br>
+                    <strong>Median:</strong> {desc['50%']}<br>
+                    <strong>Q3:</strong> {desc['75%']}<br>
+                    <strong>Max:</strong> {desc['max']}
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-    # code for the distributions tab
+    # Distributions tab
     with tab2:
         st.caption("Frequency distribution of key numerical features")
 
-        col1, col2 = st.columns(2)
+        col1d, col2d = st.columns(2)
         selected_features = numeric_cols[:2]
 
-        for i, col in enumerate([col1, col2]):
+        for i, col in enumerate([col1d, col2d]):
             feature = selected_features[i]
             col.markdown(f"**{feature} Distribution**")
             col.caption(f"Frequency distribution of {feature.lower().replace('_', ' ')}")
@@ -135,6 +147,7 @@ def data_overview():
             chart_df = pd.DataFrame({feature: counts.values}, index=counts.index)
             col.bar_chart(chart_df)
 
+    # Correlations tab
     with tab3:
         st.subheader("🔗 Correlation Heatmap")
         st.caption("Pairwise Pearson correlation between numerical features")
@@ -149,7 +162,7 @@ def data_overview():
             linewidths=0.5,
             square=True,
             cbar_kws={"shrink": 0.8},
-            ax=ax
+            ax=ax,
         )
         ax.set_title("Correlation Matrix", fontsize=10)
         st.pyplot(fig)
@@ -165,440 +178,61 @@ def data_overview():
                 "title": "Strong Positive Correlation",
                 "text": "Applicant Income and Loan Amount show strong correlation (0.57), indicating higher income applicants request larger loans.",
                 "color": "#e8f0fe",
-                "title_color": "#1967d2"
+                "title_color": "#1967d2",
             },
             {
                 "title": "Asset-Income Relationship",
                 "text": "Total Assets correlate moderately with both Applicant Income (0.43) and Loan Amount (0.38), showing wealth consistency.",
                 "color": "#e6f4ea",
-                "title_color": "#137333"
+                "title_color": "#137333",
             },
             {
                 "title": "Independence Noted",
                 "text": "Co-applicant Income shows weak correlation with Applicant Income (0.19), suggesting independent income sources.",
                 "color": "#fef7e0",
-                "title_color": "#d39e00"
-            }
+                "title_color": "#d39e00",
+            },
         ]
 
         for block in insight_blocks:
-            st.markdown(f"""
-            <div style="background-color:{block['color']}; padding:15px; border-radius:10px; margin-bottom:12px;">
-                <h5 style="color:{block['title_color']}; margin-bottom:5px;">{block['title']}</h5>
-                <p style="margin:0;">{block['text']}</p>
-            </div>
-            """, unsafe_allow_html=True)
+            st.markdown(
+                f"""
+                <div style="background-color:{block['color']}; padding:15px; border-radius:10px; margin-bottom:12px;">
+                    <h5 style="color:{block['title_color']}; margin-bottom:5px;">{block['title']}</h5>
+                    <p style="margin:0;">{block['text']}</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
     st.markdown("___")
 
-    def show_dataset_info(df: pd.DataFrame):
-        """Display dataset information in a formatted card"""
-        total_records = f"{df.shape[0]:,}"
-        total_features = df.shape[1]
-        missing_values = f"{df.isnull().sum().sum():,}"
-        default_rate = f"{(df['Default'] == 1).mean() * 100:.1f}%" if 'Default' in df.columns else "N/A"
-
-        st.markdown(f"""
-            <div style="border: 1px solid #e6e6e6; border-radius: 12px; padding: 24px; margin-bottom: 20px;">
-                <h4 style="margin-bottom: 5px;">📂 Dataset Information</h4>
-                <p style="margin-top: 0px; color: #666;">Loan Default Prediction Dataset</p>
-                <div style="background: #f9f9f9; padding: 15px 20px; border-radius: 10px; display: flex; align-items: center; justify-content: space-between;">
-                    <div>
-                        <strong style="font-size: 16px;">Loan_default.csv</strong><br>
-                        <span style="color: #777; font-size: 13px;">A dataset for classifying loan default risk using applicant profiles</span>
-                    </div>
-                </div>
-                <div style="display: flex; justify-content: space-around; margin-top: 20px;">
-                    <div style="text-align: center;">
-                        <div style="font-size: 24px; font-weight: bold;">{total_records}</div>
-                        <div style="font-size: 13px; color: #666;">Total Records</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <div style="font-size: 24px; font-weight: bold;">{total_features}</div>
-                        <div style="font-size: 13px; color: #666;">Features</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <div style="font-size: 24px; font-weight: bold;">{missing_values}</div>
-                        <div style="font-size: 13px; color: #666;">Missing Values</div>
-                    </div>
-                    <div style="text-align: center;">
-                        <div style="font-size: 24px; font-weight: bold;">{default_rate}</div>
-                        <div style="font-size: 13px; color: #666;">Default Rate</div>
-                    </div>
-                </div>
-            </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown("### 📋 Dataset Preview")
-        st.caption(f"Showing the complete dataset with {df.shape[0]} rows and {df.shape[1]} columns")
-
-        # Display the full dataset with scrolling capability
-        st.dataframe(
-            df,
-            use_container_width=True,
-            height=400  # Set a fixed height to enable scrolling
-        )
-
-        # column information
-        with st.expander("🔍 Column Details"):
-            col_info = pd.DataFrame({
-                'Column': df.columns,
-                'Data Type': df.dtypes,
-                'Non-Null Count': df.count(),
-                'Null Count': df.isnull().sum(),
-                'Null %': (df.isnull().sum() / len(df) * 100).round(2)
-            })
-            st.dataframe(col_info, use_container_width=True)
-
+    # Show dataset info button
     if st.button("📊 View Dataset Information"):
         show_dataset_info(df)
 
-#---------------------------------------------------------------------------------------------------------------
-# --- PAGE 2: DATA PREPROCESSING
-def run_preprocessing():
-    if not st.session_state.get("preprocessing_done"):
 
-        # Make a safe working copy of the dataset
-        data = df.copy()
-
-        # Drop label and ID columns
-        X = data.drop(columns=["LoanID", "Default"], errors="ignore")
-        y = data["Default"]
-
-        # Identify feature types
-        numeric_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
-        cat_cols = X.select_dtypes(include="object").columns.tolist()
-
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-        # Define preprocessing pipeline
-        numeric_transformer = Pipeline([
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler())
-        ])
-
-        categorical_transformer = Pipeline([
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("encoder", OneHotEncoder(handle_unknown="ignore"))
-        ])
-
-        preprocessor = ColumnTransformer([
-            ("num", numeric_transformer, numeric_cols),
-            ("cat", categorical_transformer, cat_cols)
-        ])
-
-        # Fit and transform
-        X_train = preprocessor.fit_transform(X_train)
-        X_test = preprocessor.transform(X_test)
-
-        # Store in session state
-        st.session_state.update({
-            "preprocessing_done": True,
-            "preprocessor": preprocessor,
-            "X_train": X_train,
-            "X_test": X_test,
-            "y_train": y_train,
-            "y_test": y_test
-        })
-
-        st.success("✅ Preprocessing completed successfully.")
-    else:
-        st.info("Preprocessing has already been done.")
-
-
-def render_preprocessing_steps():
-    st.markdown("""
-    <style>
-        .pipeline-container {
-            background-color: #fff;
-            padding: 30px;
-            border-radius: 16px;
-            border: 1px solid #e6e6e6;
-            margin-top: 10px;
-        }
-        .pipeline-title {
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 0;
-        }
-        .pipeline-subtitle {
-            font-size: 14px;
-            color: #7f7f7f;
-            margin-top: 0;
-            margin-bottom: 30px;
-        }
-        .step-card {
-            background-color: #fff;
-            border: 1px solid #e6e6e6;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 24px;
-        }
-        .step-header {
-            display: flex;
-            align-items: center;
-            margin-bottom: 6px;
-        }
-        .step-number {
-            background-color: #000;
-            color: white;
-            font-weight: 600;
-            border-radius: 50%;
-            width: 28px;
-            height: 28px;
-            text-align: center;
-            line-height: 28px;
-            margin-right: 12px;
-            font-size: 14px;
-        }
-        .step-title {
-            font-weight: 600;
-            font-size: 16px;
-            margin: 0;
-        }
-        .status-pill {
-            background-color: #000;
-            color: white;
-            font-size: 12px;
-            font-weight: 600;
-            padding: 3px 10px;
-            border-radius: 8px;
-            margin-left: 10px;
-        }
-        .step-subtitle {
-            font-size: 13px;
-            color: #888;
-            margin: 4px 0 16px 40px;
-        }
-        .checkmark {
-            font-size: 14px;
-            margin-left: 40px;
-            margin-bottom: 4px;
-        }
-        .summary-box {
-            background-color: #f5f5f5;
-            border-radius: 10px;
-            padding: 18px 24px;
-            margin-top: 20px;
-        }
-    </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class="pipeline-container">
-        <div class="pipeline-title">⚙️ Preprocessing Pipeline</div>
-        <div class="pipeline-subtitle">Step-by-step data transformation process</div>
-    """, unsafe_allow_html=True)
-
-    # Step 1
-    st.markdown("""
-        <div class="step-card">
-            <div class="step-header">
-                <div class="step-number">1</div>
-                <div class="step-title">Missing Value Treatment</div>
-                <div class="status-pill">✔ completed</div>
-            </div>
-            <div class="step-subtitle">Handle missing values using appropriate imputation strategies</div>
-            <div class="checkmark">✅ Median imputation for numerical features</div>
-            <div class="checkmark">✅ Mode imputation for categorical features</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Step 2
-    st.markdown("""
-        <div class="step-card">
-            <div class="step-header">
-                <div class="step-number">2</div>
-                <div class="step-title">Feature Scaling & Encoding</div>
-                <div class="status-pill">✔ completed</div>
-            </div>
-            <div class="step-subtitle">Standardize and encode feature types for modeling</div>
-            <div class="checkmark">✅ Standard scaling for numerical features</div>
-            <div class="checkmark">✅ One-hot encoding for categorical features</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Step 3
-    st.markdown("""
-        <div class="step-card">
-            <div class="step-header">
-                <div class="step-number">3</div>
-                <div class="step-title">Train-Test Split</div>
-                <div class="status-pill">✔ completed</div>
-            </div>
-            <div class="step-subtitle">Split dataset into separate training and testing subsets</div>
-            <div class="checkmark">✅ Split into 80% train / 20% test</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # Summary
-    X_train = st.session_state.get("X_train")
-    X_test = st.session_state.get("X_test")
-    y_train = st.session_state.get("y_train")
-
-    if X_train is not None and X_test is not None and y_train is not None:
-        st.markdown("""
-            <div class="step-card summary-box">
-                <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">✅ Summary</div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(f"""
-                <div><strong>X_train shape:</strong> {X_train.shape}</div>
-                <div><strong>X_test shape:</strong> {X_test.shape}</div>
-            </div>
-        </div> <!-- close pipeline container -->
-        """, unsafe_allow_html=True)
-
-        dist_df = y_train.value_counts(normalize=True).reset_index()
-        dist_df.columns = ["Class", "Proportion"]
-        dist_df["Class"] = dist_df["Class"].apply(lambda x: f"Class {x}")
-        st.markdown("**y_train distribution:**")
-        st.table(dist_df)
-    else:
-        st.warning("No training/test data found in session state.")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
-def preprocessing():
+def preprocessing_page() -> None:
     st.title("Preprocessing Pipeline")
     st.write("Click the button below to run preprocessing on the dataset.")
 
     if st.button("🚀 Run Preprocessing"):
-        run_preprocessing()
+        run_preprocessing(df)
 
     if st.session_state.get("preprocessing_done"):
         render_preprocessing_steps()
 
-# -----------------------------------------------------------------------------
-# ----- PAGE 3: model training and evaluation logic
 
-def train_and_evaluate_models(X_train, y_train, X_test, y_test, feature_names):
-    results_dict = {}
-    best_model_name = None
-    best_model_object = None
-    y_pred_best = None
-    conf_matrix_best = None
-    feature_importance_df = None
-    best_f1_score = -1
-
-    # --- Hyperparameter grids ---
-    dt_params = {
-        "max_depth": [4, 6, 8],
-        "min_samples_split": [5, 10]
-    }
-    rf_params = {
-        "n_estimators": [50, 100],
-        "max_depth": [5, 8]
-    }
-
-    # --- Train Decision Tree ---
-    for max_depth in dt_params["max_depth"]:
-        for min_split in dt_params["min_samples_split"]:
-            name = f"Decision Tree (depth={max_depth}, split={min_split})"
-            model = DecisionTreeClassifier(max_depth=max_depth, min_samples_split=min_split, random_state=42)
-
-            start_time = time.time()
-            model.fit(X_train, y_train)
-            duration = time.time() - start_time
-
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
-
-            try:
-                y_scores = model.predict_proba(X_test)[:, 1]
-            except AttributeError:
-                y_scores = model.decision_function(X_test)
-
-            results_dict[name] = {
-                "model": model,
-                "train_accuracy": accuracy_score(y_train, y_train_pred),
-                "test_accuracy": accuracy_score(y_test, y_test_pred),
-                "precision": precision_score(y_test, y_test_pred, zero_division=0),
-                "recall": recall_score(y_test, y_test_pred, zero_division=0),
-                "f1_score": f1_score(y_test, y_test_pred, zero_division=0),
-                "auc": roc_auc_score(y_test, y_scores),
-                "training_time": duration,
-                "y_pred": y_test_pred,
-                "conf_matrix": confusion_matrix(y_test, y_test_pred)
-            }
-
-            if results_dict[name]["f1_score"] > best_f1_score:
-                best_model_name = name
-                best_model_object = model
-                y_pred_best = y_test_pred
-                conf_matrix_best = results_dict[name]["conf_matrix"]
-                best_f1_score = results_dict[name]["f1_score"]
-
-                if hasattr(model, "feature_importances_"):
-                    importance = model.feature_importances_
-                    feature_importance_df = pd.DataFrame({
-                        "Feature": feature_names,
-                        "Importance": importance
-                    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
-
-    # --- Train Random Forest ---
-    for n_estimators in rf_params["n_estimators"]:
-        for max_depth in rf_params["max_depth"]:
-            name = f"Random Forest (n={n_estimators}, depth={max_depth})"
-            model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
-
-            start_time = time.time()
-            model.fit(X_train, y_train)
-            duration = time.time() - start_time
-
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
-
-            try:
-                y_scores = model.predict_proba(X_test)[:, 1]
-            except AttributeError:
-                y_scores = model.decision_function(X_test)
-
-            results_dict[name] = {
-                "model": model,
-                "train_accuracy": accuracy_score(y_train, y_train_pred),
-                "test_accuracy": accuracy_score(y_test, y_test_pred),
-                "precision": precision_score(y_test, y_test_pred, zero_division=0),
-                "recall": recall_score(y_test, y_test_pred, zero_division=0),
-                "f1_score": f1_score(y_test, y_test_pred, zero_division=0),
-                "auc": roc_auc_score(y_test, y_scores),
-                "training_time": duration,
-                "y_pred": y_test_pred,
-                "conf_matrix": confusion_matrix(y_test, y_test_pred)
-            }
-
-            if results_dict[name]["f1_score"] > best_f1_score:
-                best_model_name = name
-                best_model_object = model
-                y_pred_best = y_test_pred
-                conf_matrix_best = results_dict[name]["conf_matrix"]
-                best_f1_score = results_dict[name]["f1_score"]
-
-                if hasattr(model, "feature_importances_"):
-                    importance = model.feature_importances_
-                    feature_importance_df = pd.DataFrame({
-                        "Feature": feature_names,
-                        "Importance": importance
-                    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
-
-    return (
-        results_dict,
-        best_model_name,
-        best_model_object,
-        y_pred_best,
-        conf_matrix_best,
-        feature_importance_df
-    )
-
-def model():
+def model_page() -> None:
     st.title("Model Training & Evaluation")
     st.caption("Comprehensive model development and performance analysis")
 
+    # Ensure preprocessing has been run
     if not st.session_state.get("preprocessing_done"):
         st.warning("⚠️ Please complete preprocessing before training models.")
         return
 
+    # Trigger training if not already in session state
     if "results_dict" not in st.session_state:
         if st.button("🚀 Train Models", type="primary"):
             with st.spinner("Training models..."):
@@ -607,36 +241,37 @@ def model():
                     st.session_state["y_train"],
                     st.session_state["X_test"],
                     st.session_state["y_test"],
-                    st.session_state["preprocessor"].get_feature_names_out()
+                    st.session_state["preprocessor"].get_feature_names_out(),
                 )
 
-                st.session_state.update({
-                    "trained_models": {name: res["model"] for name, res in results_dict.items()},
-                    "results_dict": results_dict,
-                    "best_model_name": best_name,
-                    "best_model": best_model,
-                    "y_pred_best": y_pred_best,
-                    "conf_matrix": cm,
-                    "feature_importance_df": feat_imp_df
-                })
+                st.session_state.update(
+                    {
+                        "trained_models": {name: res["model"] for name, res in results_dict.items()},
+                        "results_dict": results_dict,
+                        "best_model_name": best_name,
+                        "best_model": best_model,
+                        "y_pred_best": y_pred_best,
+                        "conf_matrix": cm,
+                        "feature_importance_df": feat_imp_df,
+                    }
+                )
 
                 st.success(f"✅ Models trained. Best model: {best_name}")
         return
 
+    # Extract results from session state
     results_dict = st.session_state["results_dict"]
     best_name = st.session_state["best_model_name"]
     cm = st.session_state["conf_matrix"]
     feat_imp_df = st.session_state["feature_importance_df"]
-    best_model = results_dict[best_name]
+    best = results_dict[best_name]
 
-    # --- Metric Cards ---
-    best = st.session_state["results_dict"][st.session_state["best_model_name"]]
-    best_name = st.session_state["best_model_name"]
     model_type = best_name.split(" (")[0]
     model_params = best_name.split(" (")[1].replace(")", "")
 
-    # Unified 4-card layout
-    st.markdown("""
+    # Metric cards
+    st.markdown(
+        """
     <div style="display: flex; gap: 20px; justify-content: space-between; margin-top: 30px; flex-wrap: wrap;">
       <div style="flex: 1; min-width: 180px; background: #f7f7f7; padding: 20px; border-radius: 12px; text-align: center;">
         <div style="font-size: 14px; color: #666; font-weight: 600;">Best Model</div>
@@ -657,26 +292,32 @@ def model():
       </div>
     </div>
     """.format(
-        model_type, model_params,
-        best["test_accuracy"] * 100,
-        best["training_time"],
-        best["auc"]
-    ), unsafe_allow_html=True)
+            model_type,
+            model_params,
+            best["test_accuracy"] * 100,
+            best["training_time"],
+            best["auc"],
+        ),
+        unsafe_allow_html=True,
+    )
 
     st.markdown("### 🧮 Model Performance Comparison")
 
+    # Build performance table
     table_data = []
     for name, res in results_dict.items():
         status = "best" if name == best_name else "good"
-        table_data.append({
-            "Model": name,
-            "Accuracy": f"{res['test_accuracy']*100:.1f}%",
-            "Precision": f"{res['precision']:.2f}",
-            "Recall": f"{res['recall']:.2f}",
-            "F1-Score": f"{res['f1_score']:.2f}",
-            "AUC": f"{res['auc']:.2f}",
-            "Status": status
-        })
+        table_data.append(
+            {
+                "Model": name,
+                "Accuracy": f"{res['test_accuracy'] * 100:.1f}%",
+                "Precision": f"{res['precision']:.2f}",
+                "Recall": f"{res['recall']:.2f}",
+                "F1-Score": f"{res['f1_score']:.2f}",
+                "AUC": f"{res['auc']:.2f}",
+                "Status": status,
+            }
+        )
 
     df_perf = pd.DataFrame(table_data)
 
@@ -684,19 +325,20 @@ def model():
         color = {"best": "#000", "good": "#999"}.get(val, "#CCC")
         return f'background-color:{color}; color:white; border-radius:6px; padding:2px 8px; font-weight:bold'
 
-    st.dataframe(df_perf.style.applymap(style_status, subset=["Status"]), use_container_width=True)
+    st.dataframe(
+        df_perf.style.applymap(style_status, subset=["Status"]), use_container_width=True
+    )
 
-    # --- Confusion Matrix Breakdown ---
+    # Confusion matrix breakdown
     st.markdown("### 🧮 Confusion Matrix Breakdown")
 
-    # Extract values from confusion matrix
-    tp = st.session_state["conf_matrix"][1, 1]
-    fp = st.session_state["conf_matrix"][0, 1]
-    fn = st.session_state["conf_matrix"][1, 0]
-    tn = st.session_state["conf_matrix"][0, 0]
+    tp = cm[1, 1]
+    fp = cm[0, 1]
+    fn = cm[1, 0]
+    tn = cm[0, 0]
 
-    # Styled block layout
-    st.markdown("""
+    st.markdown(
+        """
     <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-bottom: 10px;">
 
       <div style="flex: 1; min-width: 240px; background-color: #e6f4ea; padding: 20px; border-radius: 12px;">
@@ -720,27 +362,29 @@ def model():
       </div>
 
     </div>
-    """.format(tp, fn, fp, tn), unsafe_allow_html=True)
+    """.format(tp, fn, fp, tn),
+        unsafe_allow_html=True,
+    )
 
     # Chart view toggle
     with st.expander("📈 View Confusion Matrix Chart"):
         fig, ax = plt.subplots()
         sns.heatmap(
-            st.session_state["conf_matrix"],
+            cm,
             annot=True,
             fmt="d",
             cmap="Blues",
             xticklabels=["No Default", "Default"],
             yticklabels=["No Default", "Default"],
             cbar=False,
-            ax=ax
+            ax=ax,
         )
         ax.set_xlabel("Predicted Label")
         ax.set_ylabel("Actual Label")
         ax.set_title("Confusion Matrix Heatmap")
         st.pyplot(fig)
 
-    # --- Feature Importance ---
+    # Feature importance
     if feat_imp_df is not None:
         st.markdown("### 📉 Feature Importance")
         fig = px.bar(
@@ -749,16 +393,14 @@ def model():
             y="Feature",
             orientation="h",
             title="Top 10 Influential Features",
-            height=400
+            height=400,
         )
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- Training Configuration Summary ---
-    X_train = st.session_state["X_train"]
-    X_test = st.session_state["X_test"]
-
-    st.markdown("""
+    # Training configuration summary
+    st.markdown(
+        """
     <div style="background-color:#f9f9f9; padding: 25px 30px; border-radius: 12px; border: 1px solid #eee; margin-top:20px;">
         <div style="display: flex; align-items: center; margin-bottom: 10px;">
             <span style="font-size: 22px; margin-right: 10px;">⚙️</span>
@@ -773,16 +415,17 @@ def model():
         </ul>
     </div>
     """.format(
-        len(st.session_state["X_train"]),
-        len(st.session_state["X_test"]),
-        st.session_state["results_dict"][st.session_state["best_model_name"]]["training_time"]
-    ), unsafe_allow_html=True)
+            len(st.session_state["X_train"]),
+            len(st.session_state["X_test"]),
+            st.session_state["results_dict"][st.session_state["best_model_name"]]["training_time"],
+        ),
+        unsafe_allow_html=True,
+    )
 
     st.markdown("### 🌳 Model Visualization")
 
     selected_model_name = st.selectbox(
-        "Select a model to visualize",
-        list(st.session_state["trained_models"].keys())
+        "Select a model to visualize", list(st.session_state["trained_models"].keys())
     )
 
     model_to_plot = st.session_state["trained_models"][selected_model_name]
@@ -791,19 +434,27 @@ def model():
 
     # Default settings for readability
     depth = st.slider("Tree Depth to Display", 1, 6, value=3)
-    figsize = st.selectbox("Figure Width", options=[(16, 8), (20, 10), (28, 14)],
-                           format_func=lambda x: f"{x[0]} x {x[1]}")
+    figsize = st.selectbox(
+        "Figure Width",
+        options=[(16, 8), (20, 10), (28, 14)],
+        format_func=lambda x: f"{x[0]} x {x[1]}",
+    )
 
     # Random Forest handling
     if hasattr(model_to_plot, "estimators_"):
         st.info(
-            "ℹ️ Random Forest is an ensemble of decision trees. You can select and visualize one of its individual trees.")
+            "ℹ️ Random Forest is an ensemble of decision trees. You can select and visualize one of its individual trees."
+        )
 
-        index = st.slider("Select Tree Index", 0, len(model_to_plot.estimators_) - 1, 0)
+        index = st.slider(
+            "Select Tree Index", 0, len(model_to_plot.estimators_) - 1, 0
+        )
         tree = model_to_plot.estimators_[index]
 
         fig, ax = plt.subplots(figsize=figsize)
-        plot_tree(
+        from sklearn.tree import plot_tree as sk_plot_tree  # local import to avoid circular
+
+        sk_plot_tree(
             tree,
             feature_names=feature_names,
             class_names=class_names,
@@ -811,14 +462,16 @@ def model():
             rounded=True,
             max_depth=depth,
             fontsize=10,
-            ax=ax
+            ax=ax,
         )
         st.pyplot(fig)
 
     # Decision Tree handling
     elif hasattr(model_to_plot, "tree_"):
         fig, ax = plt.subplots(figsize=figsize)
-        plot_tree(
+        from sklearn.tree import plot_tree as sk_plot_tree  # local import to avoid circular
+
+        sk_plot_tree(
             model_to_plot,
             feature_names=feature_names,
             class_names=class_names,
@@ -826,52 +479,62 @@ def model():
             rounded=True,
             max_depth=depth,
             fontsize=10,
-            ax=ax
+            ax=ax,
         )
         st.pyplot(fig)
-
     else:
         st.warning("⚠️ This model type cannot be visualized as a tree.")
 
-# ---------prediction page logic
-def prediction():
+
+def prediction_page() -> None:
+    """Render the prediction page where users can input loan details."""
     if "preprocessor" not in st.session_state or "best_model" not in st.session_state:
         st.warning("Please complete model training before using the prediction page.")
         return
 
-    df = pd.read_csv("Loan_default.csv")  # for metadata
-    X = df.drop(columns=["LoanID", "Default"], errors="ignore")
+    # Reload raw data for metadata
+    X_meta = df.drop(columns=["LoanID", "Default"], errors="ignore")
 
-    numeric_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
-    cat_cols = X.select_dtypes(include="object").columns.tolist()
+    numeric_cols_meta = X_meta.select_dtypes(include=["int64", "float64"]).columns.tolist()
+    cat_cols_meta = X_meta.select_dtypes(include="object").columns.tolist()
 
     # Create form layout
     with st.form("loan_form"):
         st.markdown("### 📝 Loan Application Form")
-        st.caption("Enter your details below to check your loan eligibility using our ML model")
+        st.caption(
+            "Enter your details below to check your loan eligibility using our ML model"
+        )
 
-        col1, col2 = st.columns(2)
+        col1f, col2f = st.columns(2)
         user_input = {}
 
         # Left column – Personal Info
-        with col1:
-            for col in cat_cols[:len(cat_cols)//2]:
+        with col1f:
+            for col in cat_cols_meta[: len(cat_cols_meta) // 2]:
                 options = sorted(df[col].dropna().unique().tolist())
-                user_input[col] = st.selectbox(col.replace("_", " "), options=options, key=f"cat1_{col}")
+                user_input[col] = st.selectbox(
+                    col.replace("_", " "), options=options, key=f"cat1_{col}"
+                )
 
-            for col in numeric_cols[:len(numeric_cols)//2]:
+            for col in numeric_cols_meta[: len(numeric_cols_meta) // 2]:
                 default_val = float(df[col].median())
-                user_input[col] = st.number_input(col.replace("_", " "), value=default_val, key=f"num1_{col}")
+                user_input[col] = st.number_input(
+                    col.replace("_", " "), value=default_val, key=f"num1_{col}"
+                )
 
         # Right column – Financial Info
-        with col2:
-            for col in cat_cols[len(cat_cols)//2:]:
+        with col2f:
+            for col in cat_cols_meta[len(cat_cols_meta) // 2 :]:
                 options = sorted(df[col].dropna().unique().tolist())
-                user_input[col] = st.selectbox(col.replace("_", " "), options=options, key=f"cat2_{col}")
+                user_input[col] = st.selectbox(
+                    col.replace("_", " "), options=options, key=f"cat2_{col}"
+                )
 
-            for col in numeric_cols[len(numeric_cols)//2:]:
+            for col in numeric_cols_meta[len(numeric_cols_meta) // 2 :]:
                 default_val = float(df[col].median())
-                user_input[col] = st.number_input(col.replace("_", " "), value=default_val, key=f"num2_{col}")
+                user_input[col] = st.number_input(
+                    col.replace("_", " "), value=default_val, key=f"num2_{col}"
+                )
 
         submitted = st.form_submit_button("🔍 Predict Loan Eligibility")
 
@@ -885,12 +548,18 @@ def prediction():
 
         prediction = model.predict(X_transformed)[0]
         try:
-            confidence = model.predict_proba(X_transformed)[0][1] if prediction == 1 else model.predict_proba(X_transformed)[0][0]
-        except:
+            confidence = (
+                model.predict_proba(X_transformed)[0][1]
+                if prediction == 1
+                else model.predict_proba(X_transformed)[0][0]
+            )
+        except Exception:
             confidence = None
 
         # Get top 10 features
-        top_feats = st.session_state["feature_importance_df"].head(10)
+        top_feats = st.session_state.get("feature_importance_df")
+        if top_feats is not None:
+            top_feats = top_feats.head(10)
 
         # Show Prediction Result
         st.markdown("### ✅ Prediction Result")
@@ -900,29 +569,35 @@ def prediction():
             st.error("Loan Not Approved – Risk of Default")
 
         if confidence is not None:
-            st.metric("Confidence Score", f"{confidence*100:.1f}%")
+            st.metric("Confidence Score", f"{confidence * 100:.1f}%")
 
         # Generate decision factor explanations
         st.markdown("#### 📌 Decision Factors")
         explanations = []
-        for feat in top_feats["Feature"]:
-            # Get the untransformed name
-            if "__" in feat:
-                raw_feat = feat.split("__")[-1]
-            else:
-                raw_feat = feat
-
-            if raw_feat in input_df.columns:
-                val = input_df[raw_feat].values[0]
-                importance = top_feats[top_feats["Feature"] == feat]["Importance"].values[0]
-                # You can customize these rules
-                if isinstance(val, (int, float)):
-                    if val > df[raw_feat].mean():
-                        explanations.append((f"✓ High {raw_feat.replace('_', ' ')}", True))
-                    else:
-                        explanations.append((f"× Low {raw_feat.replace('_', ' ')}", False))
+        if top_feats is not None:
+            for feat in top_feats["Feature"]:
+                # Get the untransformed name
+                if "__" in feat:
+                    raw_feat = feat.split("__")[-1]
                 else:
-                    explanations.append((f"✓ {raw_feat.replace('_', ' ')} = {val}", True))
+                    raw_feat = feat
+
+                if raw_feat in input_df.columns:
+                    val = input_df[raw_feat].values[0]
+                    # You can customize these rules
+                    if isinstance(val, (int, float)):
+                        if val > df[raw_feat].mean():
+                            explanations.append(
+                                (f"✓ High {raw_feat.replace('_', ' ')}", True)
+                            )
+                        else:
+                            explanations.append(
+                                (f"× Low {raw_feat.replace('_', ' ')}", False)
+                            )
+                    else:
+                        explanations.append(
+                            (f"✓ {raw_feat.replace('_', ' ')} = {val}", True)
+                        )
 
         for text, is_positive in explanations:
             if is_positive:
@@ -930,48 +605,61 @@ def prediction():
             else:
                 st.markdown(f"❌ {text}")
 
-# --- Sidebar Navigation ---
-with st.sidebar:
-    st.markdown("""
-    <h2 style='margin-bottom:0;'>Loan Predictor</h2>
-    <p style='margin-top:0; color: gray;'>ML-Powered Decision Engine: <span><i>A Group 5 Dashboard</i></span></p>
-    <hr style='margin-top:10px; margin-bottom:10px;'>
-    """, unsafe_allow_html=True)
 
-    selected_page = option_menu(
-        menu_title=None,
-        options=[
-            "Loan Prediction",
-            "Data Overview",
-            "Preprocessing",
-            "Model Training & Evaluation",
-        ],
-        icons=["house", "database", "gear", "cpu"],
-        menu_icon=None,
-        default_index=0,
-        styles={
-            "container": {"padding": "0!important"},
-            "icon": {"color": "black", "font-size": "18px"},
-            "nav-link": {
-                "font-size": "15px",
-                "text-align": "left",
-                "margin": "0px",
-                "--hover-color": "#eee"
+def main() -> None:
+    """Main application logic: handles page navigation and styling."""
+    # Inject custom CSS
+    load_css("styles.css")
+
+    # Sidebar navigation
+    with st.sidebar:
+        st.markdown(
+            """
+            <h2 style='margin-bottom:0;'>Loan Predictor</h2>
+            <p style='margin-top:0; color: gray;'>ML-Powered Decision Engine: <span><i>A Group 5 Dashboard</i></span></p>
+            <hr style='margin-top:10px; margin-bottom:10px;'>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        selected_page = option_menu(
+            menu_title=None,
+            options=[
+                "Loan Prediction",
+                "Data Overview",
+                "Preprocessing",
+                "Model Training & Evaluation",
+            ],
+            icons=["house", "database", "gear", "cpu"],
+            menu_icon=None,
+            default_index=1,
+            styles={
+                "container": {"padding": "0!important"},
+                "icon": {"color": "black", "font-size": "18px"},
+                "nav-link": {
+                    "font-size": "15px",
+                    "text-align": "left",
+                    "margin": "0px",
+                    "--hover-color": "#eee",
+                },
+                "nav-link-selected": {
+                    "background-color": "#ffffff",
+                    "font-weight": "bold",
+                    "color": "#000000",
+                },
             },
-            "nav-link-selected": {
-                "background-color": "#ffffff",
-                "font-weight": "bold",
-                "color": "#000000"
-            }
-        }
-    )
+        )
 
-# --- Page Routing ---
-if selected_page == "Loan Prediction":
-    prediction()
-elif selected_page == "Data Overview":
-    data_overview()
-elif selected_page == "Preprocessing":
-    preprocessing()
-elif selected_page == "Model Training & Evaluation":
-    model()
+    # Page routing
+    if selected_page == "Loan Prediction":
+        prediction_page()
+    elif selected_page == "Data Overview":
+        data_overview()
+    elif selected_page == "Preprocessing":
+        preprocessing_page()
+    elif selected_page == "Model Training & Evaluation":
+        model_page()
+
+
+if __name__ == "__main__":
+    main()
