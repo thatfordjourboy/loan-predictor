@@ -9,18 +9,15 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 import plotly.express as px
 
-# Model types we visualize / detect
+
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
-
-# Metrics used in-page (helper handles training metrics)
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, balanced_accuracy_score,
     average_precision_score, roc_curve, precision_recall_curve
 )
 
-# Explainability (treeinterpreter; with Python 3.11 this is OK)
 from treeinterpreter import treeinterpreter as ti
 
 # Helper module
@@ -33,7 +30,14 @@ from helper import (
     _approval_curve,
 )
 
-# Logging / debug options (safe to keep)
+import os
+os.environ["OMP_NUM_THREADS"]="1"
+os.environ["OPENBLAS_NUM_THREADS"]="1"
+os.environ["MKL_NUM_THREADS"]="1"
+os.environ["NUMEXPR_NUM_THREADS"]="1"
+os.environ["VECLIB_MAXIMUM_THREADS"]="1"
+
+# Logging / debug options
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
 st.set_option("client.showErrorDetails", True)
 
@@ -54,7 +58,7 @@ def load_data(path: str) -> pd.DataFrame:
 
 df = load_data("Loan_default.csv")
 
-# Coerce numeric-looking object columns (commas/spaces)
+# Coerce numeric-looking object columns
 def _coerce_numeric(col: pd.Series) -> pd.Series:
     if col.dtype != "object":
         return col
