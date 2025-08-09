@@ -55,7 +55,7 @@ def show_dataset_info(df: pd.DataFrame) -> None:
     st.markdown("### 📋 Dataset Preview")
     st.caption(f"Showing the complete dataset with {df.shape[0]} rows and {df.shape[1]} columns")
 
-    # Display the full dataset with scrolling capability
+    # Display the full dataset with scrolling capability by fixing height
     st.dataframe(df,use_container_width=True,height=400)
 
     # Column information
@@ -74,7 +74,7 @@ def show_dataset_info(df: pd.DataFrame) -> None:
 
 def run_preprocessing(df: pd.DataFrame) -> None:
     if not st.session_state.get("preprocessing_done"):
-        # Make a safe working copy of the dataset
+        # create a safe working copy of the dataset to keep original sacrosanct lol
         data = df.copy()
 
         # Drop label and ID columns
@@ -87,30 +87,26 @@ def run_preprocessing(df: pd.DataFrame) -> None:
 
         # Split data
         X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42
-        )
+            X, y, test_size=0.2, random_state=42)
 
         # Define preprocessing pipeline
         numeric_transformer = Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="median")),
                 ("scaler", StandardScaler()),
-            ]
-        )
+            ])
 
         categorical_transformer = Pipeline(
             [
                 ("imputer", SimpleImputer(strategy="most_frequent")),
                 ("encoder", OneHotEncoder(handle_unknown="ignore")),
-            ]
-        )
+            ])
 
         preprocessor = ColumnTransformer(
             [
                 ("num", numeric_transformer, numeric_cols),
                 ("cat", categorical_transformer, cat_cols),
-            ]
-        )
+            ])
 
         # Fit and transform
         X_train_transformed = preprocessor.fit_transform(X_train)
@@ -125,8 +121,7 @@ def run_preprocessing(df: pd.DataFrame) -> None:
                 "X_test": X_test_transformed,
                 "y_train": y_train,
                 "y_test": y_test,
-            }
-        )
+            })
 
         st.success("✅ Preprocessing completed successfully.")
     else:
@@ -157,8 +152,7 @@ def render_preprocessing_steps() -> None:
                 <div class="checkmark">✅ Mode imputation for categorical features</div>
             </div>
         """,
-        unsafe_allow_html=True,
-    )
+        unsafe_allow_html=True,)
 
     # Step 2: Feature scaling and encoding
     st.markdown(
@@ -174,8 +168,7 @@ def render_preprocessing_steps() -> None:
                 <div class="checkmark">✅ One-hot encoding for categorical features</div>
             </div>
         """,
-        unsafe_allow_html=True,
-    )
+        unsafe_allow_html=True,)
 
     # Step 3: Train-test split
     st.markdown(
@@ -190,8 +183,7 @@ def render_preprocessing_steps() -> None:
                 <div class="checkmark">✅ Split into 80% train / 20% test</div>
             </div>
         """,
-        unsafe_allow_html=True,
-    )
+        unsafe_allow_html=True,)
 
     # Summary box
     X_train = st.session_state.get("X_train")
@@ -204,8 +196,7 @@ def render_preprocessing_steps() -> None:
                 <div class="step-card summary-box">
                     <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">✅ Summary</div>
             """,
-            unsafe_allow_html=True,
-        )
+            unsafe_allow_html=True,)
 
         st.markdown(
             f"""
@@ -303,7 +294,7 @@ def train_and_evaluate_models(
                     }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
     done(tok)
 
-    # --- Random Forest block (timed) ---
+    # timed bloc for Random Forest
     tok = step("Training Random Forests")
     for n_estimators in rf_params["n_estimators"]:
         for max_depth in rf_params["max_depth"]:
@@ -352,10 +343,9 @@ def train_and_evaluate_models(
                     }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
     done(tok)
 
-    # --- Selection & packaging (timed) ---
+    # Selection & packaging (timed)
     tok = step("Selecting best model & packaging results")
-    # nothing to compute here beyond what we tracked; timing for completeness
-    time.sleep(0.01)  # tiny pause so timer isn't 0.00s; optional
+    time.sleep(0.01)
     done(tok)
 
     return (
@@ -364,5 +354,4 @@ def train_and_evaluate_models(
         best_model_object,
         y_pred_best,
         conf_matrix_best,
-        feature_importance_df,
-    )
+        feature_importance_df,)

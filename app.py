@@ -20,6 +20,7 @@ def load_css(css_file: str) -> None:
     except FileNotFoundError:
         st.warning(f"CSS file '{css_file}' not found. Styles may not apply correctly.")
 
+# minor page configurations
 st.set_page_config(layout="wide",page_title="Loan Predict@G5", initial_sidebar_state="auto")
 
 # --- Load Dataset ---
@@ -29,10 +30,11 @@ def load_data(path: str) -> pd.DataFrame:
 
 df = load_data("Loan_default.csv")
 
+# extract global numeric and categorical columns
 numeric_cols = (df.select_dtypes(include=["int64", "float64"]).drop(columns=["Default"], errors="ignore").columns.tolist())
 cat_cols = df.select_dtypes(include="object").columns.tolist()
 
-
+# data overview page
 def data_overview() -> None:
     st.title("Dataset Overview")
     st.caption("Comprehensive analysis of the loan dataset with statistical insights and visualizations.")
@@ -40,7 +42,7 @@ def data_overview() -> None:
     file_timestamp = os.path.getmtime("Loan_default.csv")
     last_updated = datetime.fromtimestamp(file_timestamp).strftime("%b %Y")
 
-    # Top metrics
+    # Top metrics built in columns
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.metric("Total Records", f"{df.shape[0]:,}", "Complete loan applications")
@@ -58,12 +60,12 @@ def data_overview() -> None:
     # Tabs
     tab1, tab2, tab3 = st.tabs(["📐 Statistical Summary", "📊 Distributions", "🔗 Correlations"])
 
-    # Statistical summary on tab1
+    # Statistical summary on tab 1
     with tab1:
         st.subheader("📈 Numerical Features Summary")
         st.caption("Descriptive statistics for numerical variables")
 
-        # Get describe output and transpose
+        # describe output and transpose for dataframe view
         stats = df[numeric_cols].describe(percentiles=[0.25, 0.5, 0.75]).T
 
         # Rename and reorder columns
@@ -79,7 +81,7 @@ def data_overview() -> None:
             }
         )[["Mean", "Median", "Std Dev", "Min", "Q1", "Q3", "Max"]]
 
-        # Round and reset index for clean display
+        # round and reset index for clean display
         stats = stats.round(1).reset_index().rename(columns={"index": "Feature"})
 
         st.dataframe(stats, use_container_width=True)
@@ -87,11 +89,11 @@ def data_overview() -> None:
         st.markdown("### 📦 Box Plot Analysis")
         st.caption("Distribution and outlier analysis for key numerical features")
 
-        # Create 3 columns
+        # create 3 columns for EDA
         col1b, col2b, col3b = st.columns(3)
         columns = [col1b, col2b, col3b]
 
-        # Render a selectbox + boxplot + stats in each column
+        # render a selectbox + boxplot + stats in each column
         for i, col in enumerate(columns):
             with col:
                 feature = st.selectbox(
@@ -127,7 +129,7 @@ def data_overview() -> None:
                     unsafe_allow_html=True,
                 )
 
-    # Distributions tab
+    # for distributions tab
     with tab2:
         st.caption("Frequency distribution of key numerical features")
 
@@ -139,7 +141,7 @@ def data_overview() -> None:
             col.markdown(f"**{feature} Distribution**")
             col.caption(f"Frequency distribution of {feature.lower().replace('_', ' ')}")
 
-            # Bin the feature manually
+            # create manual bins for the features
             binned = pd.cut(df[feature], bins=10)
             counts = binned.value_counts().sort_index()
 
@@ -150,7 +152,7 @@ def data_overview() -> None:
             chart_df = pd.DataFrame({feature: counts.values}, index=counts.index)
             col.bar_chart(chart_df)
 
-    # Correlations tab
+    # correlations tab
     with tab3:
         st.subheader("🔗 Correlation Heatmap")
         st.caption("Pairwise Pearson correlation between numerical features")
@@ -172,7 +174,7 @@ def data_overview() -> None:
 
         st.markdown("---")
 
-        # Insights
+        # previewed insights
         st.subheader("💡 Correlation Insights")
         st.caption("Key findings from correlation analysis")
 
@@ -197,6 +199,7 @@ def data_overview() -> None:
             },
         ]
 
+        # styling for insights
         for block in insight_blocks:
             st.markdown(
                 f"""
@@ -210,37 +213,40 @@ def data_overview() -> None:
 
     st.markdown("___")
 
-    # Show dataset info button
+    # Show dataset info button across all tabs
     if st.button("📊 View Dataset Information"):
         show_dataset_info(df)
 
-
+# Data preprocessing page
 def preprocessing_page() -> None:
     st.title("Preprocessing Pipeline")
     st.write("Click the button below to run preprocessing on the dataset.")
 
+    # import helper function for user to run preprocessing
     if st.button("🚀 Run Preprocessing"):
         run_preprocessing(df)
 
+    #render preprocessing pipeline on page with helper function
     if st.session_state.get("preprocessing_done"):
         render_preprocessing_steps()
 
-
+# Data modeling and evaluation page
 def model_page() -> None:
     st.title("Model Training & Evaluation")
     st.caption("Comprehensive model development and performance analysis")
 
-    # Ensure preprocessing has been run
+    # set requirement for user to complete preprocessing before training models
     if not st.session_state.get("preprocessing_done"):
         st.warning("⚠️ Please complete preprocessing before training models.")
         return
 
-    # Trigger training if not already in session state
+    # Trigger training if not data isnt committed/available to session state
+    # proceed with display time logs as training happens backend
     if "results_dict" not in st.session_state:
         if st.button("🚀 Train Models", type="primary"):
             with st.status("Training models...", expanded=True) as status:
                 def log(msg: str):
-                    status.write(msg)  # each stage & model shows with elapsed seconds
+                    status.write(msg)  # shows training status at each stage + model with elapsed time in seconds
 
                 results_dict, best_name, best_model, y_pred_best, cm, feat_imp_df = train_and_evaluate_models(
                     st.session_state["X_train"],
@@ -248,9 +254,10 @@ def model_page() -> None:
                     st.session_state["X_test"],
                     st.session_state["y_test"],
                     st.session_state["preprocessor"].get_feature_names_out(),
-                    on_step=log,  # 👈 feed progress messages into the status box
+                    on_step=log,  # logs progress messages into the status box
                 )
 
+                # dynamic updates to session state with model training results
                 st.session_state.update({
                     "trained_models": {name: res["model"] for name, res in results_dict.items()},
                     "results_dict": results_dict,
@@ -266,7 +273,7 @@ def model_page() -> None:
 
         return
 
-    # Extract results from session state
+    # extract results from session state on click (intuitively)
     results_dict = st.session_state["results_dict"]
     best_name = st.session_state["best_model_name"]
     cm = st.session_state["conf_matrix"]
@@ -276,7 +283,7 @@ def model_page() -> None:
     model_type = best_name.split(" (")[0]
     model_params = best_name.split(" (")[1].replace(")", "")
 
-    # Metric cards
+    # metric cards for refreshed page
     st.markdown(
         """
     <div style="display: flex; gap: 20px; justify-content: space-between; margin-top: 30px; flex-wrap: wrap;">
@@ -310,7 +317,7 @@ def model_page() -> None:
 
     st.markdown("### 🧮 Model Performance Comparison")
 
-    # Build performance table
+    # build performance table
     table_data = []
     for name, res in results_dict.items():
         status = "best" if name == best_name else "good"
@@ -328,6 +335,7 @@ def model_page() -> None:
 
     df_perf = pd.DataFrame(table_data)
 
+    #styling for the selected best model
     def style_status(val):
         color = {"best": "#000", "good": "#999"}.get(val, "#CCC")
         return f'background-color:{color}; color:white; border-radius:6px; padding:2px 8px; font-weight:bold'
@@ -373,7 +381,7 @@ def model_page() -> None:
         unsafe_allow_html=True,
     )
 
-    # Chart view toggle
+    # toggle for viewing chart
     with st.expander("📈 View Confusion Matrix Chart"):
         fig, ax = plt.subplots()
         sns.heatmap(
@@ -405,7 +413,7 @@ def model_page() -> None:
         fig.update_layout(yaxis={"categoryorder": "total ascending"})
         st.plotly_chart(fig, use_container_width=True)
 
-    # Training configuration summary
+    # summary of training configuration
     st.markdown(
         """
     <div style="background-color:#f9f9f9; padding: 25px 30px; border-radius: 12px; border: 1px solid #eee; margin-top:20px;">
@@ -429,6 +437,7 @@ def model_page() -> None:
         unsafe_allow_html=True,
     )
 
+    # visualizing trees
     st.markdown("### 🌳 Model Visualization")
 
     selected_model_name = st.selectbox(
@@ -443,7 +452,7 @@ def model_page() -> None:
 
     class_names = ["No Default", "Default"]
 
-    # Default settings for readability
+    # settings for user to adjust trees, improving readability
     depth = st.slider("Tree Depth to Display", 1, 6, value=3)
     figsize = st.selectbox(
         "Figure Width",
@@ -496,19 +505,19 @@ def model_page() -> None:
     else:
         st.warning("⚠️ This model type cannot be visualized as a tree.")
 
-
+# prediction page for users
 def prediction():
     if "preprocessor" not in st.session_state or "trained_models" not in st.session_state:
         st.warning("⚠️ Please train at least one model before using the prediction page.")
         return
 
-    # Load schema
+    # Load data schema without loanID and target vars.
     df_meta = pd.read_csv("Loan_default.csv")
     X_meta = df_meta.drop(columns=["LoanID", "Default"], errors="ignore")
     numeric_cols = X_meta.select_dtypes(include=["int64", "float64"]).columns.tolist()
     cat_cols = X_meta.select_dtypes(include="object").columns.tolist()
 
-    # User-friendly labels
+    # transforming into user-friendly labels
     friendly_labels = {
         "Income": "Monthly Income (local currency)",
         "CreditScore": "Credit Score",
@@ -540,6 +549,7 @@ def prediction():
             index=0
         )
 
+        # 2-column view for form
         col1, col2 = st.columns(2)
         user_input = {}
 
@@ -576,7 +586,7 @@ def prediction():
 
     feature_names = st.session_state["preprocessor"].get_feature_names_out()
 
-    # --- Probability comparison for all models ---
+    # probability comparison for all models
     results_table = []
     for name, mdl in st.session_state["trained_models"].items():
         proba = mdl.predict_proba(X_dense)[0]
@@ -594,7 +604,7 @@ def prediction():
     st.caption("See how each trained model scores this application.")
     st.dataframe(pd.DataFrame(results_table), use_container_width=True)
 
-    # --- Detailed breakdown for selected model ---
+    # detailed breakdown for selected model
     model = st.session_state["trained_models"][model_choice]
     pred_label = int(model.predict(X_dense)[0])
     confidence = float(model.predict_proba(X_dense)[0][pred_label])
@@ -632,8 +642,7 @@ def prediction():
     st.plotly_chart(fig, use_container_width=True)
 
 def main() -> None:
-    """Main application logic: handles page navigation and styling."""
-    # Inject custom CSS
+    # Main application logic for handling page navigation and styling.
     load_css("styles.css")
 
     # Sidebar navigation
@@ -688,9 +697,9 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+# display names of team members in project --thanks guys, u were awesome!!!
 st.sidebar.markdown("___")
 st.sidebar.selectbox("Tap to View All Group Members",
     ("Eleazer F. Quayson (22253333)", "Priscilla D. Gborbitey (22253220)",
      "Magdalene Arhin (22253225)", "Anna E.A Creppy (11410565)",
      "Raymond Tetteh - 22255065", "Samuel K. Tuffour (22253144"))
-
