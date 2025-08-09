@@ -1,20 +1,23 @@
-# --- Core packages ---
-streamlit==1.36.0
+# Core
 pandas==2.2.2
-numpy==2.0.2
-scipy==1.14.1
-scikit-learn==1.5.2
+numpy==1.26.4            # <— NumPy 2.x breaks many stacks
+scikit-learn==1.4.2
+scipy==1.11.4
+joblib==1.4.2
 
-# --- Vizuslizations ---
+# Streamlit + UI
+streamlit==1.36.0
+plotly==5.22.0
 matplotlib==3.8.4
 seaborn==0.13.2
-plotly==5.22.0
 streamlit-option-menu==0.3.12
 
-# --- prediction explainability ---
+# Tree interpretation
 treeinterpreter==0.2.3
+
+# SHAP stack (compatible set)
 shap==0.44.1
 numba==0.59.1
 llvmlite==0.42.0
+tqdm==4.66.4
 
-python-dateutil==2.9.0.post0
