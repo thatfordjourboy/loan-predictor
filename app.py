@@ -1,11 +1,12 @@
 import os
 from datetime import datetime
+from treeinterpreter import treeinterpreter as ti
 
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import streamlit as st
-from streamlit import set_page_config
+import numpy as np
 from streamlit_option_menu import option_menu
 import plotly.express as px
 
@@ -19,7 +20,7 @@ def load_css(css_file: str) -> None:
     except FileNotFoundError:
         st.warning(f"CSS file '{css_file}' not found. Styles may not apply correctly.")
 
-set_page_config(layout="wide",page_title="Loan Predict@G5", initial_sidebar_state="auto")
+st.set_page_config(layout="wide",page_title="Loan Predict@G5", initial_sidebar_state="auto")
 
 # --- Load Dataset ---
 @st.cache_data
@@ -435,7 +436,11 @@ def model_page() -> None:
     )
 
     model_to_plot = st.session_state["trained_models"][selected_model_name]
-    feature_names = st.session_state["preprocessor"].get_feature_names_out()
+    try:
+        feature_names = st.session_state["preprocessor"].get_feature_names_out()
+    except:
+        feature_names = list(range(st.session_state["X_train"].shape[1]))
+
     class_names = ["No Default", "Default"]
 
     # Default settings for readability
@@ -492,125 +497,139 @@ def model_page() -> None:
         st.warning("⚠️ This model type cannot be visualized as a tree.")
 
 
-def prediction_page() -> None:
-    """Render the prediction page where users can input loan details."""
-    if "preprocessor" not in st.session_state or "best_model" not in st.session_state:
-        st.warning("Please complete model training before using the prediction page.")
+def prediction():
+    if "preprocessor" not in st.session_state or "trained_models" not in st.session_state:
+        st.warning("⚠️ Please train at least one model before using the prediction page.")
         return
 
-    # Reload raw data for metadata
-    X_meta = df.drop(columns=["LoanID", "Default"], errors="ignore")
+    # Load schema
+    df_meta = pd.read_csv("Loan_default.csv")
+    X_meta = df_meta.drop(columns=["LoanID", "Default"], errors="ignore")
+    numeric_cols = X_meta.select_dtypes(include=["int64", "float64"]).columns.tolist()
+    cat_cols = X_meta.select_dtypes(include="object").columns.tolist()
 
-    numeric_cols_meta = X_meta.select_dtypes(include=["int64", "float64"]).columns.tolist()
-    cat_cols_meta = X_meta.select_dtypes(include="object").columns.tolist()
+    # User-friendly labels
+    friendly_labels = {
+        "Income": "Monthly Income (local currency)",
+        "CreditScore": "Credit Score",
+        "LoanAmount": "Loan Amount Requested",
+        "LoanTerm": "Loan Term (months)",
+        "Age": "Applicant Age",
+        "MonthsEmployed": "Months Employed",
+        "Gender": "Gender",
+        "EducationLevel": "Education Level",
+        "MaritalStatus": "Marital Status",
+        "EmploymentType": "Employment Type",
+        "PropertyArea": "Property Area",
+        "DTIRatio": "Debt-to-Income Ratio",
+        "NumCreditLines": "Number of Credit Lines",
+        "InterestRate": "Interest Rate",
+        "HasDependents": "Has Dependents",
+        "HasCoSigner": "Has Co-Signer",
+        "LoanPurpose": "Loan Purpose"
+    }
 
-    # Create form layout
     with st.form("loan_form"):
-        st.markdown("### 📝 Loan Application Form")
-        st.caption(
-            "Enter your details below to check your loan eligibility using our ML model"
+        st.markdown("<h2 class='section-title'>📝 Loan Application Form</h2>", unsafe_allow_html=True)
+        st.caption("Select a model, then fill in your details to get a prediction.")
+
+        # Model selection
+        model_choice = st.selectbox(
+            "Select a model for detailed analysis",
+            options=list(st.session_state["trained_models"].keys()),
+            index=0
         )
 
-        col1f, col2f = st.columns(2)
+        col1, col2 = st.columns(2)
         user_input = {}
 
-        # Left column – Personal Info
-        with col1f:
-            for col in cat_cols_meta[: len(cat_cols_meta) // 2]:
-                options = sorted(df[col].dropna().unique().tolist())
-                user_input[col] = st.selectbox(
-                    col.replace("_", " "), options=options, key=f"cat1_{col}"
-                )
+        with col1:
+            for col in cat_cols[: len(cat_cols) // 2]:
+                label = friendly_labels.get(col, col.replace("_", " "))
+                options = sorted(df_meta[col].dropna().unique().tolist())
+                user_input[col] = st.selectbox(label, options=options, key=f"cat1_{col}")
+            for col in numeric_cols[: len(numeric_cols) // 2]:
+                label = friendly_labels.get(col, col.replace("_", " "))
+                user_input[col] = st.number_input(label, placeholder=f"Enter {label.lower()}", key=f"num1_{col}")
 
-            for col in numeric_cols_meta[: len(numeric_cols_meta) // 2]:
-                default_val = float(df[col].median())
-                user_input[col] = st.number_input(
-                    col.replace("_", " "), value=default_val, key=f"num1_{col}"
-                )
+        with col2:
+            for col in cat_cols[len(cat_cols) // 2:]:
+                label = friendly_labels.get(col, col.replace("_", " "))
+                options = sorted(df_meta[col].dropna().unique().tolist())
+                user_input[col] = st.selectbox(label, options=options, key=f"cat2_{col}")
+            for col in numeric_cols[len(numeric_cols) // 2:]:
+                label = friendly_labels.get(col, col.replace("_", " "))
+                user_input[col] = st.number_input(label, placeholder=f"Enter {label.lower()}", key=f"num2_{col}")
 
-        # Right column – Financial Info
-        with col2f:
-            for col in cat_cols_meta[len(cat_cols_meta) // 2 :]:
-                options = sorted(df[col].dropna().unique().tolist())
-                user_input[col] = st.selectbox(
-                    col.replace("_", " "), options=options, key=f"cat2_{col}"
-                )
+        submitted = st.form_submit_button("🔍 Predict", use_container_width=False)
 
-            for col in numeric_cols_meta[len(numeric_cols_meta) // 2 :]:
-                default_val = float(df[col].median())
-                user_input[col] = st.number_input(
-                    col.replace("_", " "), value=default_val, key=f"num2_{col}"
-                )
+    if not submitted:
+        return
 
-        submitted = st.form_submit_button("🔍 Predict Loan Eligibility")
+    # Transform input
+    input_df = pd.DataFrame([user_input])
+    X_trans = st.session_state["preprocessor"].transform(input_df)
+    try:
+        X_dense = X_trans.toarray()
+    except AttributeError:
+        X_dense = np.asarray(X_trans)
 
-    if submitted:
-        # Convert input to DataFrame
-        input_df = pd.DataFrame([user_input])
+    feature_names = st.session_state["preprocessor"].get_feature_names_out()
 
-        # Preprocess and predict
-        X_transformed = st.session_state["preprocessor"].transform(input_df)
-        model = st.session_state["best_model"]
+    # --- Probability comparison for all models ---
+    results_table = []
+    for name, mdl in st.session_state["trained_models"].items():
+        proba = mdl.predict_proba(X_dense)[0]
+        approved_prob = proba[0]
+        risk_prob = proba[1]
+        pred_class = mdl.predict(X_dense)[0]
+        results_table.append({
+            "Model": name,
+            "Approval Probability": f"{approved_prob*100:.1f}%",
+            "Risk Probability": f"{risk_prob*100:.1f}%",
+            "Predicted Class": "Approved" if pred_class == 0 else "Not Approved"
+        })
 
-        prediction = model.predict(X_transformed)[0]
-        try:
-            confidence = (
-                model.predict_proba(X_transformed)[0][1]
-                if prediction == 1
-                else model.predict_proba(X_transformed)[0][0]
-            )
-        except Exception:
-            confidence = None
+    st.markdown("## 📊 Model Prediction Comparison")
+    st.caption("See how each trained model scores this application.")
+    st.dataframe(pd.DataFrame(results_table), use_container_width=True)
 
-        # Get top 10 features
-        top_feats = st.session_state.get("feature_importance_df")
-        if top_feats is not None:
-            top_feats = top_feats.head(10)
+    # --- Detailed breakdown for selected model ---
+    model = st.session_state["trained_models"][model_choice]
+    pred_label = int(model.predict(X_dense)[0])
+    confidence = float(model.predict_proba(X_dense)[0][pred_label])
 
-        # Show Prediction Result
-        st.markdown("### ✅ Prediction Result")
-        if prediction == 0:
-            st.success("Loan Approved!")
-        else:
-            st.error("Loan Not Approved – Risk of Default")
+    st.markdown("## 🎯 Selected Model Result")
+    if pred_label == 0:
+        st.markdown(f"<div class='result-card approved'>Loan Approved ✅<br><span>{confidence*100:.1f}% confidence</span></div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div class='result-card declined'>Loan Not Approved – Risk of Default ⚠️<br><span>{confidence*100:.1f}% confidence</span></div>", unsafe_allow_html=True)
 
-        if confidence is not None:
-            st.metric("Confidence Score", f"{confidence * 100:.1f}%")
+    # Feature contributions chart
+    prediction_vec, bias, contributions = ti.predict(model, X_dense)
+    pred_idx = list(model.classes_).index(pred_label)
+    contrib_for_pred = contributions[0, :, pred_idx]
 
-        # Generate decision factor explanations
-        st.markdown("#### 📌 Decision Factors")
-        explanations = []
-        if top_feats is not None:
-            for feat in top_feats["Feature"]:
-                # Get the untransformed name
-                if "__" in feat:
-                    raw_feat = feat.split("__")[-1]
-                else:
-                    raw_feat = feat
+    contrib_df = pd.DataFrame({
+        "Feature": feature_names,
+        "Contribution": contrib_for_pred,
+        "AbsContribution": np.abs(contrib_for_pred),
+    }).sort_values("AbsContribution", ascending=False)
+    top_k = contrib_df.head(10).drop(columns=["AbsContribution"])
 
-                if raw_feat in input_df.columns:
-                    val = input_df[raw_feat].values[0]
-                    # You can customize these rules
-                    if isinstance(val, (int, float)):
-                        if val > df[raw_feat].mean():
-                            explanations.append(
-                                (f"✓ High {raw_feat.replace('_', ' ')}", True)
-                            )
-                        else:
-                            explanations.append(
-                                (f"× Low {raw_feat.replace('_', ' ')}", False)
-                            )
-                    else:
-                        explanations.append(
-                            (f"✓ {raw_feat.replace('_', ' ')} = {val}", True)
-                        )
-
-        for text, is_positive in explanations:
-            if is_positive:
-                st.markdown(f"✅ {text}")
-            else:
-                st.markdown(f"❌ {text}")
-
+    st.markdown("## 📌 Top Factors (Selected Model)")
+    st.caption("Positive values push **towards** this outcome; negative values push **against** it.")
+    fig = px.bar(
+        top_k.sort_values("Contribution"),
+        x="Contribution",
+        y="Feature",
+        orientation="h",
+        height=420,
+        color="Contribution",
+        color_continuous_scale=["#d73027", "#1a9850"]
+    )
+    fig.update_layout(yaxis={"categoryorder": "total ascending"})
+    st.plotly_chart(fig, use_container_width=True)
 
 def main() -> None:
     """Main application logic: handles page navigation and styling."""
@@ -658,7 +677,7 @@ def main() -> None:
 
     # Page routing
     if selected_page == "Loan Prediction":
-        prediction_page()
+        prediction()
     elif selected_page == "Data Overview":
         data_overview()
     elif selected_page == "Preprocessing":
@@ -668,3 +687,10 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+st.sidebar.markdown("___")
+st.sidebar.selectbox("Tap to View All Group Members",
+    ("Eleazer F. Quayson (22253333)", "Priscilla D. Gborbitey (22253220)",
+     "Magdalene Arhin (22253225)", "Anna E.A Creppy (11410565)",
+     "Raymond Tetteh - 22255065", "Samuel K. Tuffour (22253144"))
+
