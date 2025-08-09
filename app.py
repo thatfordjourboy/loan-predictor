@@ -1,6 +1,8 @@
+# app.py
 import os, sys, logging, pathlib
 from datetime import datetime
 
+# --- Streamlit runtime tweaks (HF/Render friendly) ---
 os.environ.setdefault("HOME", "/tmp")
 cfg_dir = pathlib.Path(os.environ["HOME"]) / ".streamlit"
 cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -8,8 +10,6 @@ cfg_dir.mkdir(parents=True, exist_ok=True)
     "browser.gatherUsageStats = false\n"
     "theme.base = 'light'\n"
 )
-# -------------------------------------------
-from datetime import datetime
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,7 +18,6 @@ import seaborn as sns
 import streamlit as st
 from streamlit_option_menu import option_menu
 import plotly.express as px
-
 
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -40,6 +39,7 @@ from helper import (
     _approval_curve,
 )
 
+# Thread caps (avoid oversubscription on small dynos)
 os.environ["OMP_NUM_THREADS"]="1"
 os.environ["OPENBLAS_NUM_THREADS"]="1"
 os.environ["MKL_NUM_THREADS"]="1"
@@ -67,12 +67,15 @@ def load_data(path: str) -> pd.DataFrame:
 
 df = load_data("Loan_default.csv")
 
-# Coerce numeric-looking object columns
+# Coerce numeric-looking object columns, without the FutureWarning
 def _coerce_numeric(col: pd.Series) -> pd.Series:
     if col.dtype != "object":
         return col
     s = col.astype(str).str.replace(r"[,\s]", "", regex=True)
-    return pd.to_numeric(s, errors="ignore")
+    try:
+        return pd.to_numeric(s)  # will raise if mixed => we keep original text
+    except Exception:
+        return col
 
 df = df.apply(_coerce_numeric)
 
@@ -83,6 +86,11 @@ if "policy_mode" not in st.session_state:
     st.session_state["policy_mode"] = "business"
 if "policy_appetite" not in st.session_state:
     st.session_state["policy_appetite"] = "Balanced (risk vs volume)"
+
+# Persist the current page to stop resets on rerun
+PAGES = ["Loan Prediction", "Data Overview", "Preprocessing", "Model Training & Evaluation"]
+if "current_page" not in st.session_state:
+    st.session_state["current_page"] = "Data Overview"  # same default as your old default_index=1
 
 # Global column lists (excluding target)
 numeric_cols_global = (
@@ -814,11 +822,15 @@ def main() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+        # Persisted option_menu selection
+        current = st.session_state["current_page"]
+        default_idx = PAGES.index(current) if current in PAGES else 1
         selected_page = option_menu(
             menu_title=None,
-            options=["Loan Prediction", "Data Overview", "Preprocessing", "Model Training & Evaluation"],
+            options=PAGES,
             icons=["house", "database", "gear", "cpu"],
-            menu_icon=None, default_index=1,
+            menu_icon=None, default_index=default_idx, key="main_menu",
             styles={
                 "container": {"padding": "0!important"},
                 "icon": {"color": "black", "font-size": "18px"},
@@ -826,14 +838,20 @@ def main() -> None:
                 "nav-link-selected": {"background-color": "#ffffff", "font-weight": "bold", "color": "#000000"},
             },
         )
+        # Only update if changed to avoid extra reruns
+        if selected_page != current:
+            st.session_state["current_page"] = selected_page
+            st.experimental_rerun()
 
-    if selected_page == "Loan Prediction":
+    # Route by persisted value
+    page = st.session_state["current_page"]
+    if page == "Loan Prediction":
         prediction()
-    elif selected_page == "Data Overview":
+    elif page == "Data Overview":
         data_overview()
-    elif selected_page == "Preprocessing":
+    elif page == "Preprocessing":
         preprocessing_page()
-    elif selected_page == "Model Training & Evaluation":
+    elif page == "Model Training & Evaluation":
         model_page()
 
     st.sidebar.markdown("___")
