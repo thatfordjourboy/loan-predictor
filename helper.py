@@ -1,5 +1,9 @@
+from __future__ import annotations
 import time
 from time import perf_counter
+from typing import Any, Dict, Tuple, Optional
+
+import numpy as np
 import pandas as pd
 import streamlit as st
 
@@ -7,16 +11,21 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_auc_score, confusion_matrix, classification_report
+)
 
+# ---------- UI: Dataset info ----------
 def show_dataset_info(df: pd.DataFrame) -> None:
     total_records = f"{df.shape[0]:,}"
     total_features = df.shape[1]
     missing_values = f"{df.isnull().sum().sum():,}"
-    default_rate = (f"{(df['Default'] == 1).mean() * 100:.1f}%" if 'Default' in df.columns else "N/A")
+    default_rate = f"{(df['Default'] == 1).mean() * 100:.1f}%" if "Default" in df.columns else "N/A"
 
     st.markdown(
         f"""
@@ -54,78 +63,107 @@ def show_dataset_info(df: pd.DataFrame) -> None:
 
     st.markdown("### 📋 Dataset Preview")
     st.caption(f"Showing the complete dataset with {df.shape[0]} rows and {df.shape[1]} columns")
+    st.dataframe(df, use_container_width=True, height=400)
 
-    # Display the full dataset with scrolling capability by fixing height
-    st.dataframe(df,use_container_width=True,height=400)
-
-    # Column information
     with st.expander("🔍 Column Details"):
         col_info = pd.DataFrame(
             {
-                'Column': df.columns,
-                'Data Type': df.dtypes,
-                'Non-Null Count': df.count(),
-                'Null Count': df.isnull().sum(),
-                'Null %': (df.isnull().sum() / len(df) * 100).round(2),
+                "Column": df.columns,
+                "Data Type": df.dtypes.astype(str),
+                "Non-Null Count": df.count(),
+                "Null Count": df.isnull().sum(),
+                "Null %": (df.isnull().sum() / len(df) * 100).round(2),
             }
         )
         st.dataframe(col_info, use_container_width=True)
 
 
+# ---------- Preprocessing ----------
+def _make_onehot_dense() -> OneHotEncoder:
+    """
+    Return a dense-output OneHotEncoder compatible across sklearn versions.
+    """
+    try:
+        # sklearn >= 1.2
+        return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+    except TypeError:
+        # older sklearn
+        return OneHotEncoder(handle_unknown="ignore", sparse=False)
+
 def run_preprocessing(df: pd.DataFrame) -> None:
-    if not st.session_state.get("preprocessing_done"):
-        # create a safe working copy of the dataset to keep original sacrosanct lol
-        data = df.copy()
-
-        # Drop label and ID columns
-        X = data.drop(columns=["LoanID", "Default"], errors="ignore")
-        y = data["Default"]
-
-        # Identify feature types
-        numeric_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
-        cat_cols = X.select_dtypes(include="object").columns.tolist()
-
-        # Split data
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42)
-
-        # Define preprocessing pipeline
-        numeric_transformer = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", StandardScaler()),
-            ])
-
-        categorical_transformer = Pipeline(
-            [
-                ("imputer", SimpleImputer(strategy="most_frequent")),
-                ("encoder", OneHotEncoder(handle_unknown="ignore")),
-            ])
-
-        preprocessor = ColumnTransformer(
-            [
-                ("num", numeric_transformer, numeric_cols),
-                ("cat", categorical_transformer, cat_cols),
-            ])
-
-        # Fit and transform
-        X_train_transformed = preprocessor.fit_transform(X_train)
-        X_test_transformed = preprocessor.transform(X_test)
-
-        # Store in session state
-        st.session_state.update(
-            {
-                "preprocessing_done": True,
-                "preprocessor": preprocessor,
-                "X_train": X_train_transformed,
-                "X_test": X_test_transformed,
-                "y_train": y_train,
-                "y_test": y_test,
-            })
-
-        st.success("✅ Preprocessing completed successfully.")
-    else:
+    """
+    Fit transformers on training data, transform train/test, and stash in session_state.
+    Also store medians/mins/maxs for form defaults and ranges.
+    """
+    if st.session_state.get("preprocessing_done"):
         st.info("Preprocessing has already been done.")
+        return
+
+    # Safe copy
+    data = df.copy()
+
+    # Drop ID + target for X; keep y
+    X = data.drop(columns=["LoanID", "Default"], errors="ignore")
+    y = data["Default"]
+
+    # Column groups
+    numeric_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
+    cat_cols = X.select_dtypes(include="object").columns.tolist()
+
+    # Train/test split
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+
+    # Store numeric distribution info for realistic defaults on the form
+    num_medians = X_train[numeric_cols].median(numeric_only=True).to_dict()
+    num_mins = X_train[numeric_cols].min(numeric_only=True).to_dict()
+    num_maxs = X_train[numeric_cols].max(numeric_only=True).to_dict()
+
+    # Transformers
+    numeric_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="median")),
+            ("scaler", StandardScaler()),
+        ]
+    )
+    categorical_transformer = Pipeline(
+        steps=[
+            ("imputer", SimpleImputer(strategy="most_frequent")),
+            ("encoder", _make_onehot_dense()),
+        ]
+    )
+
+    preprocessor = ColumnTransformer(
+        transformers=[
+            ("num", numeric_transformer, numeric_cols),
+            ("cat", categorical_transformer, cat_cols),
+        ],
+        remainder="drop",
+        verbose_feature_names_out=False,
+    )
+
+    # Fit + transform
+    X_train_transformed = preprocessor.fit_transform(X_train)
+    X_test_transformed = preprocessor.transform(X_test)
+
+    # Persist in session
+    st.session_state.update(
+        {
+            "preprocessing_done": True,
+            "preprocessor": preprocessor,
+            "X_train": X_train_transformed,
+            "X_test": X_test_transformed,
+            "y_train": y_train,
+            "y_test": y_test,
+            "medians": num_medians,
+            "mins": num_mins,
+            "maxs": num_maxs,
+            "target_names": ["No Default", "Default"],
+        }
+    )
+
+    st.success("✅ Preprocessing completed successfully.")
 
 
 def render_preprocessing_steps() -> None:
@@ -138,7 +176,6 @@ def render_preprocessing_steps() -> None:
         unsafe_allow_html=True,
     )
 
-    # Step 1: Missing value treatment
     st.markdown(
         """
             <div class="step-card">
@@ -152,9 +189,9 @@ def render_preprocessing_steps() -> None:
                 <div class="checkmark">✅ Mode imputation for categorical features</div>
             </div>
         """,
-        unsafe_allow_html=True,)
+        unsafe_allow_html=True,
+    )
 
-    # Step 2: Feature scaling and encoding
     st.markdown(
         """
             <div class="step-card">
@@ -168,9 +205,9 @@ def render_preprocessing_steps() -> None:
                 <div class="checkmark">✅ One-hot encoding for categorical features</div>
             </div>
         """,
-        unsafe_allow_html=True,)
+        unsafe_allow_html=True,
+    )
 
-    # Step 3: Train-test split
     st.markdown(
         """
             <div class="step-card">
@@ -180,26 +217,21 @@ def render_preprocessing_steps() -> None:
                     <div class="status-pill">✔ completed</div>
                 </div>
                 <div class="step-subtitle">Split dataset into separate training and testing subsets</div>
-                <div class="checkmark">✅ Split into 80% train / 20% test</div>
+                <div class="checkmark">✅ Stratified 80% train / 20% test</div>
             </div>
         """,
-        unsafe_allow_html=True,)
+        unsafe_allow_html=True,
+    )
 
-    # Summary box
     X_train = st.session_state.get("X_train")
     X_test = st.session_state.get("X_test")
     y_train = st.session_state.get("y_train")
 
     if X_train is not None and X_test is not None and y_train is not None:
         st.markdown(
-            """
+            f"""
                 <div class="step-card summary-box">
                     <div style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">✅ Summary</div>
-            """,
-            unsafe_allow_html=True,)
-
-        st.markdown(
-            f"""
                     <div><strong>X_train shape:</strong> {X_train.shape}</div>
                     <div><strong>X_test shape:</strong> {X_test.shape}</div>
                 </div>
@@ -208,10 +240,10 @@ def render_preprocessing_steps() -> None:
             unsafe_allow_html=True,
         )
 
-        # Display y_train distribution
+        # y_train distribution
         dist_df = y_train.value_counts(normalize=True).reset_index()
         dist_df.columns = ["Class", "Proportion"]
-        dist_df["Class"] = dist_df["Class"].apply(lambda x: f"Class {x}")
+        dist_df["Class"] = dist_df["Class"].map({0: "No Default (0)", 1: "Default (1)"})
         st.markdown("**y_train distribution:**")
         st.table(dist_df)
     else:
@@ -219,139 +251,228 @@ def render_preprocessing_steps() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
 
+# ---------- Threshold / score utilities (for policy simulation & plots) ----------
+def _safe_scores(model, X):
+    """Return scores in [0,1] where higher = risk(Default=1)."""
+    try:
+        return model.predict_proba(X)[:, 1]
+    except Exception:
+        try:
+            raw = model.decision_function(X)
+            rmin, rmax = float(raw.min()), float(raw.max())
+            return (raw - rmin) / (rmax - rmin + 1e-9)
+        except Exception:
+            return None
+
+def _approval_curve(y_true, scores, thr_grid):
+    """For each threshold, compute approval rate (scores<thr) and default rate among approved."""
+    out = []
+    for thr in thr_grid:
+        approved = scores < thr  # approve when predicted risk is below policy threshold
+        approved_cnt = int(approved.sum())
+        appr_rate = approved_cnt / len(scores)
+        if approved_cnt == 0:
+            def_rate = np.nan
+        else:
+            def_rate = float(((y_true == 1) & approved).sum()) / approved_cnt
+        out.append((thr, appr_rate, def_rate))
+    return pd.DataFrame(out, columns=["Threshold", "ApprovalRate", "DefaultRateAmongApproved"])
+
+def _recommend_threshold_by_cap(y_true, scores, max_default_rate_among_approved: float = 0.08):
+    grid = np.linspace(0.05, 0.95, 91)
+    curve = _approval_curve(y_true, scores, grid)
+    feasible = curve[curve["DefaultRateAmongApproved"] <= max_default_rate_among_approved].copy()
+    if feasible.empty:
+        # fallback: closest-to-cap among those with approvals
+        feasible = curve.dropna(subset=["DefaultRateAmongApproved"]).copy()
+        if feasible.empty:
+            return 0.50, None  # ultimate fallback
+        idx = (feasible["DefaultRateAmongApproved"] - max_default_rate_among_approved).abs().idxmin()
+        return float(feasible.loc[idx, "Threshold"]), feasible
+    # pick feasible point with max approval rate; tie-breaker uses lowest default rate
+    idx = feasible.sort_values(["ApprovalRate", "DefaultRateAmongApproved"], ascending=[False, True]).index[0]
+    return float(feasible.loc[idx, "Threshold"]), feasible
+
+
+# ---------- Model training & evaluation ----------
 def train_and_evaluate_models(
-    X_train, y_train, X_test, y_test, feature_names,
-    on_step=None,   # 👈 callback that receives text updates (e.g., status.write)
-):
+    X_train: np.ndarray,
+    y_train: pd.Series,
+    X_test: np.ndarray,
+    y_test: pd.Series,
+    feature_names: np.ndarray | list,
+    on_step=None,
+    use_class_weight: bool = True,
+    cv_folds: int = 3,
+    refit_metric: str = "f1",
+    n_iter_per_model: int = 6,
+    target_names: Optional[list[str]] = None,
+    calibrate_proba: bool = True,
+) -> Tuple[
+    Dict[str, Any], str, Any, np.ndarray, np.ndarray, Optional[pd.DataFrame], Optional[str], Optional[float]
+]:
+    """
+    Train Decision Tree & Random Forest via randomized CV; evaluate on test set.
+    Returns an 8-tuple exactly as expected by app.py.
+    """
+
+    # tiny log helpers
     def step(label: str):
-        if on_step: on_step(f"▶️ {label}…")
+        if on_step:
+            on_step(f"▶️ {label}…")
         return (label, perf_counter())
 
     def done(token):
         label, t0 = token
         elapsed = perf_counter() - t0
-        if on_step: on_step(f"✅ {label} ({elapsed:.2f}s)")
+        if on_step:
+            on_step(f"✅ {label} ({elapsed:.2f}s)")
 
-    # containers
-    results_dict = {}
-    best_model_name = None
-    best_model_object = None
-    y_pred_best = None
-    conf_matrix_best = None
-    feature_importance_df = None
-    best_f1_score = -1
+    results_dict: Dict[str, Any] = {}
+    best_name: Optional[str] = None
+    best_model: Optional[Any] = None
+    y_pred_best: Optional[np.ndarray] = None
+    cm_best: Optional[np.ndarray] = None
+    feat_imp_df: Optional[pd.DataFrame] = None
+    clf_report_text: Optional[str] = None
+    infer_time_ms_per_sample: Optional[float] = None
 
-    # --- Hyperparameter grids ---
-    dt_params = {"max_depth": [4, 6, 8], "min_samples_split": [5, 10]}
-    rf_params = {"n_estimators": [50, 100], "max_depth": [5, 8]}
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=42)
 
-    # --- Decision Tree block (timed) ---
-    tok = step("Training Decision Trees")
-    for max_depth in dt_params["max_depth"]:
-        for min_split in dt_params["min_samples_split"]:
-            name = f"Decision Tree (depth={max_depth}, split={min_split})"
-            model = DecisionTreeClassifier(max_depth=max_depth, min_samples_split=min_split, random_state=42)
+    dt_param_dist = {
+        "max_depth": [3, 4, 6, 8, 10],
+        "min_samples_split": [2, 5, 10, 20],
+        "min_samples_leaf": [1, 2, 5],
+        **({"class_weight": [None, "balanced"]} if use_class_weight else {}),
+    }
+    rf_param_dist = {
+        "n_estimators": [50, 100, 150],
+        "max_depth": [None, 5, 8, 12],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf": [1, 2, 4],
+        "max_features": ["sqrt", "log2"],
+        **({"class_weight": [None, "balanced"]} if use_class_weight else {}),
+    }
 
-            t_fit = perf_counter()
-            model.fit(X_train, y_train)
-            fit_time = perf_counter() - t_fit
+    model_specs = [
+        ("Decision Tree", DecisionTreeClassifier(random_state=42), dt_param_dist),
+        ("Random Forest", RandomForestClassifier(random_state=42, n_jobs=-1), rf_param_dist),
+    ]
 
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
+    scoring = {"f1": "f1", "precision": "precision", "recall": "recall", "roc_auc": "roc_auc"}
+
+    tok = step("Randomized CV on training data")
+    for label, base_model, param_dist in model_specs:
+        search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_dist,
+            n_iter=n_iter_per_model,
+            scoring=scoring,
+            refit=refit_metric,
+            cv=cv,
+            n_jobs=-1,
+            verbose=0,
+            random_state=42,
+            return_train_score=False,
+        )
+
+        t0 = perf_counter()
+        search.fit(X_train, y_train)
+        cv_fit_time = perf_counter() - t0
+
+        best_est = search.best_estimator_
+
+        # Probability calibration improves threshold tuning and displayed probabilities
+        calibrated_est = best_est
+        if calibrate_proba:
             try:
-                y_scores = model.predict_proba(X_test)[:, 1]
-            except AttributeError:
-                y_scores = model.decision_function(X_test)
+                method = "isotonic" if len(y_train) >= 2000 else "sigmoid"
+                calibrated_est = CalibratedClassifierCV(base_estimator=best_est, method=method, cv=3)
+                calibrated_est.fit(X_train, y_train)
+            except Exception:
+                calibrated_est = best_est  # fallback if anything fails
 
-            results_dict[name] = {
-                "model": model,
-                "train_accuracy": accuracy_score(y_train, y_train_pred),
-                "test_accuracy": accuracy_score(y_test, y_test_pred),
-                "precision": precision_score(y_test, y_test_pred, zero_division=0),
-                "recall": recall_score(y_test, y_test_pred, zero_division=0),
-                "f1_score": f1_score(y_test, y_test_pred, zero_division=0),
-                "auc": roc_auc_score(y_test, y_scores),
-                "training_time": fit_time,
-                "y_pred": y_test_pred,
-                "conf_matrix": confusion_matrix(y_test, y_test_pred),
-            }
+        # Honest hold-out evaluation
+        y_pred = calibrated_est.predict(X_test)
+        try:
+            y_scores = calibrated_est.predict_proba(X_test)[:, 1]
+        except Exception:
+            y_scores = None
 
-            if on_step:
-                on_step(f"   • {name} done ({fit_time:.2f}s) — F1={results_dict[name]['f1_score']:.3f}")
+        test_acc = accuracy_score(y_test, y_pred)
+        test_prec = precision_score(y_test, y_pred, zero_division=0)
+        test_rec = recall_score(y_test, y_pred, zero_division=0)
+        test_f1 = f1_score(y_test, y_pred, zero_division=0)
+        test_auc = roc_auc_score(y_test, y_scores) if y_scores is not None else 0.0
+        cm = confusion_matrix(y_test, y_pred)
 
-            if results_dict[name]["f1_score"] > best_f1_score:
-                best_model_name = name
-                best_model_object = model
-                y_pred_best = y_test_pred
-                conf_matrix_best = results_dict[name]["conf_matrix"]
-                best_f1_score = results_dict[name]["f1_score"]
+        # Inference timing (ms/sample)
+        t_inf0 = perf_counter()
+        _ = calibrated_est.predict(X_test)
+        t_inf = perf_counter() - t_inf0
+        per_sample_ms = (t_inf / len(X_test)) * 1000
 
-                if hasattr(model, "feature_importances_"):
-                    importance = model.feature_importances_
-                    feature_importance_df = pd.DataFrame({
-                        "Feature": feature_names,
-                        "Importance": importance
-                    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
-    done(tok)
+        name = f"{label} (best={search.best_params_})"
+        results_dict[name] = {
+            "model": calibrated_est,
+            "best_params": search.best_params_,
+            "cv_fit_time": cv_fit_time,
+            "cv_best_score_refit_metric": search.best_score_,
+            "test_accuracy": test_acc,
+            "test_precision": test_prec,
+            "test_recall": test_rec,
+            "test_f1": test_f1,
+            "test_auc": test_auc,
+            "y_pred": y_pred,
+            "conf_matrix": cm,
+            "inference_ms_per_sample": per_sample_ms,
+        }
 
-    # timed bloc for Random Forest
-    tok = step("Training Random Forests")
-    for n_estimators in rf_params["n_estimators"]:
-        for max_depth in rf_params["max_depth"]:
-            name = f"Random Forest (n={n_estimators}, depth={max_depth})"
-            model = RandomForestClassifier(n_estimators=n_estimators, max_depth=max_depth, random_state=42)
+        if on_step:
+            on_step(
+                f"   • {name} — CV-{refit_metric.upper()}={search.best_score_:.3f}, "
+                f"Test F1={test_f1:.3f}, AUC={test_auc:.3f}, inf≈{per_sample_ms:.2f} ms/sample"
+            )
 
-            t_fit = perf_counter()
-            model.fit(X_train, y_train)
-            fit_time = perf_counter() - t_fit
+        # Choose global best by test F1
+        if (best_model is None) or (test_f1 > results_dict.get(best_name, {}).get("test_f1", -1)):
+            best_name = name
+            best_model = calibrated_est
+            y_pred_best = y_pred
+            cm_best = cm
+            infer_time_ms_per_sample = per_sample_ms
 
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
+            # Feature importances for tree models
             try:
-                y_scores = model.predict_proba(X_test)[:, 1]
-            except AttributeError:
-                y_scores = model.decision_function(X_test)
+                importances = getattr(search.best_estimator_, "feature_importances_", None)
+                if importances is not None:
+                    feat_imp_df = (
+                        pd.DataFrame({"Feature": list(feature_names), "Importance": importances})
+                        .sort_values("Importance", ascending=False)
+                        .reset_index(drop=True)
+                    )
+                else:
+                    feat_imp_df = None
+            except Exception:
+                feat_imp_df = None
 
-            results_dict[name] = {
-                "model": model,
-                "train_accuracy": accuracy_score(y_train, y_train_pred),
-                "test_accuracy": accuracy_score(y_test, y_test_pred),
-                "precision": precision_score(y_test, y_test_pred, zero_division=0),
-                "recall": recall_score(y_test, y_test_pred, zero_division=0),
-                "f1_score": f1_score(y_test, y_test_pred, zero_division=0),
-                "auc": roc_auc_score(y_test, y_scores),
-                "training_time": fit_time,
-                "y_pred": y_test_pred,
-                "conf_matrix": confusion_matrix(y_test, y_test_pred),
-            }
+            clf_report_text = classification_report(
+                y_test, y_pred_best,
+                target_names=target_names or ["0", "1"],
+                digits=3,
+                zero_division=0,
+            )
 
-            if on_step:
-                on_step(f"   • {name} done ({fit_time:.2f}s) — F1={results_dict[name]['f1_score']:.3f}")
-
-            if results_dict[name]["f1_score"] > best_f1_score:
-                best_model_name = name
-                best_model_object = model
-                y_pred_best = y_test_pred
-                conf_matrix_best = results_dict[name]["conf_matrix"]
-                best_f1_score = results_dict[name]["f1_score"]
-
-                if hasattr(model, "feature_importances_"):
-                    importance = model.feature_importances_
-                    feature_importance_df = pd.DataFrame({
-                        "Feature": feature_names,
-                        "Importance": importance
-                    }).sort_values(by="Importance", ascending=False).reset_index(drop=True)
     done(tok)
-
-    # Selection & packaging (timed)
-    tok = step("Selecting best model & packaging results")
-    time.sleep(0.01)
-    done(tok)
+    tok = step("Packaging results"); time.sleep(0.02); done(tok)
 
     return (
         results_dict,
-        best_model_name,
-        best_model_object,
+        best_name or "",
+        best_model,
         y_pred_best,
-        conf_matrix_best,
-        feature_importance_df,)
+        cm_best,
+        feat_imp_df,
+        clf_report_text,
+        infer_time_ms_per_sample,
+    )

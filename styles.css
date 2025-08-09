@@ -1,113 +1,145 @@
-.pipeline-container {
-    background-color: #fff;
-    padding: 30px;
-    border-radius: 16px;
-    border: 1px solid #e6e6e6;
-    margin-top: 10px;
-}
-.pipeline-title {
-    font-size: 20px;
-    font-weight: 600;
-    margin-bottom: 0;
-}
-.pipeline-subtitle {
-    font-size: 14px;
-    color: #7f7f7f;
-    margin-top: 0;
-    margin-bottom: 30px;
-}
-.step-card {
-    background-color: #fff;
-    border: 1px solid #e6e6e6;
-    border-radius: 12px;
-    padding: 24px;
-    margin-bottom: 24px;
-}
-.step-header {
-    display: flex;
-    align-items: center;
-    margin-bottom: 2px;
-}
-.step-number {
-    background-color: #000;
-    color: white;
-    font-weight: 600;
-    border-radius: 50%;
-    width: 28px;
-    height: 28px;
-    text-align: center;
-    line-height: 28px;
-    margin-right: 12px;
-    font-size: 14px;
-}
-.step-title {
-    font-weight: 600;
-    font-size: 16px;
-    margin: 0;
-}
-.status-pill {
-    background-color: #000;
-    color: white;
-    font-size: 12px;
-    font-weight: 600;
-    padding: 3px 10px;
-    border-radius: 8px;
-    margin-left: 10px;
-}
-.step-subtitle {
-    font-size: 13px;
-    color: #888;
-    margin: 4px 0 16px 40px;
-}
-.checkmark {
-    font-size: 14px;
-    margin-left: 40px;
-    margin-bottom: 4px;
-}
-.summary-box {
-    background-color: #f5f5f5;
-    border-radius: 10px;
-    padding: 18px 24px;
-    margin-top: 20px;
-}
-.section-title {
-    font-size: 22px;
-    font-weight: 700;
-    margin-top: 10px;
-    margin-bottom: 10px;
-    color: #222;
+/* Global typography */
+:root{
+  --bg:#ffffff;
+  --muted:#f7f7f7;
+  --border:#eaeaea;
+  --text:#222;
+  --sub:#666;
+  --ok:#10b981;        /* green */
+  --warn:#f59e0b;      /* amber */
+  --danger:#ef4444;    /* red */
+  --info:#3b82f6;      /* blue */
 }
 
-.section-subtitle {
-    font-size: 18px;
-    font-weight: 600;
-    margin-top: 15px;
-    color: #333;
+html, body { background: var(--bg); }
+h1, h2, h3, h4, h5 { color: var(--text); letter-spacing: .2px; }
+p, .stMarkdown { color: var(--text); }
+
+/* tighten Streamlit default paddings just a touch */
+.block-container { padding-top: 1.2rem !important; }
+
+/* -----------------------
+   Section headers / captions
+------------------------*/
+.section-title{
+  margin: 6px 0 8px 0;
+  font-size: 22px;
+  font-weight: 700;
+}
+small, .caption, .stCaption, .st-emotion-cache-10trblm {
+  color: var(--sub) !important;
 }
 
-.result-card {
-    padding: 18px;
-    border-radius: 12px;
-    font-size: 18px;
-    font-weight: 600;
-    margin-bottom: 20px;
+/* -----------------------
+   Result cards
+------------------------*/
+.result-card{
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 20px;
+  margin: 8px 0 16px;
+  font-size: 18px;
+  line-height: 1.4;
+  background: var(--muted);
+  box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+}
+.result-card span{
+  display:block;
+  margin-top:6px;
+  font-size:14px;
+  color: var(--sub);
+}
+.result-card.approved{
+  background: #ecfdf5;             /* light green */
+  border-color: #d1fae5;
+}
+.result-card.declined{
+  background: #fff7ed;             /* light orange */
+  border-color: #ffedd5;
 }
 
-.result-card span {
-    display: block;
-    font-size: 14px;
-    color: #555;
-    margin-top: 4px;
+/* -----------------------
+   Preprocessing pipeline
+------------------------*/
+.pipeline-container{
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: #fff;
+}
+.pipeline-title{
+  font-size: 18px;
+  font-weight: 700;
+}
+.pipeline-subtitle{
+  font-size: 13px;
+  color: var(--sub);
+  margin-bottom: 6px;
+}
+.step-card{
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--muted);
+  margin: 10px 0;
+}
+.step-header{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-bottom:6px;
+}
+.step-number{
+  width: 24px; height: 24px;
+  display:flex; align-items:center; justify-content:center;
+  border-radius: 50%;
+  background: var(--info);
+  color:#fff; font-weight:700; font-size: 13px;
+}
+.step-title{ font-weight:700; }
+.status-pill{
+  margin-left:auto;
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #e8f1ff;
+  color: #1d4ed8;
+  text-transform: lowercase;
+}
+.step-subtitle{ color: var(--sub); font-size: 13px; margin: 4px 0 6px;}
+.checkmark{
+  font-size: 13px;
+  margin: 2px 0;
+}
+.summary-box{
+  background:#f9fafb;
+  border:1px dashed var(--border);
 }
 
-.result-card.approved {
-    background-color: #e6f4ea;
-    color: #137333;
-    border: 1px solid #cce3d6;
+/* -----------------------
+   Tables / Dataframes
+------------------------*/
+.dataframe, .stDataFrame, .stTable {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
 }
 
-.result-card.declined {
-    background-color: #fdecea;
-    color: #b3261e;
-    border: 1px solid #f5c2c0;
+/* -----------------------
+   Sidebar nav tweaks
+------------------------*/
+.css-1d391kg, .st-emotion-cache-6qob1r { /* Streamlit changes classnames often; harmless if not found */
+  padding-top: 10px !important;
 }
+
+/* -----------------------
+   Form controls nudges
+------------------------*/
+.stSelectbox, .stNumberInput, .stSlider, .stTextInput{
+  border-radius: 10px;
+}
+
+/* -----------------------
+   Plotly/Matplotlib spacing
+------------------------*/
+.js-plotly-plot { border-radius: 12px; box-shadow: 0 1px 0 rgba(0,0,0,0.02); }
