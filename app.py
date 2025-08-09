@@ -1,4 +1,4 @@
-import os
+import os, sys, logging
 from datetime import datetime
 
 import matplotlib.pyplot as plt
@@ -9,19 +9,21 @@ import streamlit as st
 from streamlit_option_menu import option_menu
 import plotly.express as px
 
-# tree viz & models
-from treeinterpreter import treeinterpreter as ti
+# Model types we visualize / detect
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 
-# metrics
+# Metrics used in-page (helper handles training metrics)
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     roc_auc_score, confusion_matrix, balanced_accuracy_score,
     average_precision_score, roc_curve, precision_recall_curve
 )
 
-# --- helper functions
+# Explainability (treeinterpreter; with Python 3.11 this is OK)
+from treeinterpreter import treeinterpreter as ti
+
+# Helper module
 from helper import (
     show_dataset_info,
     run_preprocessing,
@@ -29,16 +31,13 @@ from helper import (
     train_and_evaluate_models,
     _safe_scores,
     _approval_curve,
-    _recommend_threshold_by_cap,
 )
 
-import logging, sys, traceback
+# Logging / debug options (safe to keep)
 logging.basicConfig(stream=sys.stderr, level=logging.INFO)
-import streamlit as st
 st.set_option("client.showErrorDetails", True)
 
-
-# ----------------- page config -----------------
+# ----------------- Page config -----------------
 st.set_page_config(layout="wide", page_title="Loan Predict@G5", initial_sidebar_state="auto")
 
 def load_css(css_file: str) -> None:
@@ -48,29 +47,43 @@ def load_css(css_file: str) -> None:
     except FileNotFoundError:
         st.warning(f"CSS file '{css_file}' not found. Styles may not apply correctly.")
 
-# ----------------- data cache -----------------
+# ----------------- Data cache & load -----------------
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     return pd.read_csv(path)
 
 df = load_data("Loan_default.csv")
 
-# --- global policy state ---
+# Coerce numeric-looking object columns (commas/spaces)
+def _coerce_numeric(col: pd.Series) -> pd.Series:
+    if col.dtype != "object":
+        return col
+    s = col.astype(str).str.replace(r"[,\s]", "", regex=True)
+    return pd.to_numeric(s, errors="ignore")
+
+df = df.apply(_coerce_numeric)
+
+# ----------------- Global state defaults -----------------
 if "policy_threshold" not in st.session_state:
-    st.session_state["policy_threshold"] = 0.50  # risk-side threshold (approve if risk < threshold)
+    st.session_state["policy_threshold"] = 0.50
 if "policy_mode" not in st.session_state:
-    st.session_state["policy_mode"] = "business"   # "business" or "manual"
+    st.session_state["policy_mode"] = "business"
 if "policy_appetite" not in st.session_state:
     st.session_state["policy_appetite"] = "Balanced (risk vs volume)"
 
-# global type lists (excluding target)
-numeric_cols_global = df.select_dtypes(include=["int64", "float64"]).drop(columns=["Default"], errors="ignore").columns.tolist()
+# Global column lists (excluding target)
+numeric_cols_global = (
+    df.select_dtypes(include=["int64", "float64"])
+      .drop(columns=["Default"], errors="ignore")
+      .columns.tolist()
+)
 cat_cols_global = df.select_dtypes(include="object").columns.tolist()
 
-# ----------------- pages -----------------
+# ----------------- Pages -----------------
 def data_overview() -> None:
     st.title("Dataset Overview")
     st.caption("Comprehensive analysis of the loan dataset with statistical insights and visualizations.")
+    has_num = len(numeric_cols_global) > 0
 
     try:
         file_timestamp = os.path.getmtime("Loan_default.csv")
@@ -95,65 +108,94 @@ def data_overview() -> None:
 
     with tab1:
         st.subheader("📈 Numerical Features Summary")
-        stats = df[numeric_cols_global].describe(percentiles=[0.25, 0.5, 0.75]).T.rename(
-            columns={"mean": "Mean","std": "Std Dev","min": "Min","25%": "Q1","50%": "Median","75%": "Q3","max": "Max"}
-        )[["Mean","Median","Std Dev","Min","Q1","Q3","Max"]].round(1).reset_index().rename(columns={"index": "Feature"})
-        st.dataframe(stats, use_container_width=True)
+        if not has_num:
+            st.info("No numeric columns detected. Upload/prepare data with numeric fields to see summaries.")
+        else:
+            stats = (
+                df[numeric_cols_global]
+                .describe(percentiles=[0.25, 0.5, 0.75])
+                .T.rename(columns={"mean": "Mean","std": "Std Dev","min": "Min","25%": "Q1","50%": "Median","75%": "Q3","max": "Max"})
+                [["Mean","Median","Std Dev","Min","Q1","Q3","Max"]]
+                .round(1)
+                .reset_index()
+                .rename(columns={"index": "Feature"})
+            )
+            st.dataframe(stats, use_container_width=True)
 
-        st.markdown("### 📦 Box Plot Analysis")
-        col1b, col2b, col3b = st.columns(3)
-        for i, col in enumerate([col1b, col2b, col3b]):
-            with col:
-                feature = st.selectbox(f"Feature {i+1}", options=numeric_cols_global, index=min(i, len(numeric_cols_global)-1), key=f"box-feature-{i}")
-                fig, ax = plt.subplots(figsize=(3, 3))
-                ax.boxplot(df[feature].dropna(), vert=True, patch_artist=True,
-                           boxprops=dict(facecolor="#E0ECF8", color="#4F81BD"),
-                           medianprops=dict(color="red"))
-                ax.set_title(feature, fontsize=10); ax.set_xticks([])
-                st.pyplot(fig)
-                desc = df[feature].describe(percentiles=[0.25,0.5,0.75]).round(1)
-                st.markdown(
-                    f"<div style='font-size: 13px;'><strong>Min:</strong> {desc['min']}<br>"
-                    f"<strong>Q1:</strong> {desc['25%']}<br><strong>Median:</strong> {desc['50%']}<br>"
-                    f"<strong>Q3:</strong> {desc['75%']}<br><strong>Max:</strong> {desc['max']}</div>",
-                    unsafe_allow_html=True
-                )
+            st.markdown("### 📦 Box Plot Analysis")
+            col1b, col2b, col3b = st.columns(3)
+            for i, col in enumerate([col1b, col2b, col3b]):
+                with col:
+                    feature = (
+                        st.selectbox(
+                            f"Feature {i+1}",
+                            options=numeric_cols_global,
+                            index=min(i, len(numeric_cols_global)-1) if len(numeric_cols_global) else 0,
+                            key=f"box-feature-{i}",
+                        )
+                        if len(numeric_cols_global) else None
+                    )
+                    if feature:
+                        fig, ax = plt.subplots(figsize=(3, 3))
+                        ax.boxplot(
+                            df[feature].dropna(), vert=True, patch_artist=True,
+                            boxprops=dict(facecolor="#E0ECF8", color="#4F81BD"),
+                            medianprops=dict(color="red")
+                        )
+                        ax.set_title(feature, fontsize=10); ax.set_xticks([])
+                        st.pyplot(fig)
+                        desc = df[feature].describe(percentiles=[0.25,0.5,0.75]).round(1)
+                        st.markdown(
+                            f"<div style='font-size: 13px;'><strong>Min:</strong> {desc['min']}<br>"
+                            f"<strong>Q1:</strong> {desc['25%']}<br><strong>Median:</strong> {desc['50%']}<br>"
+                            f"<strong>Q3:</strong> {desc['75%']}<br><strong>Max:</strong> {desc['max']}</div>",
+                            unsafe_allow_html=True
+                        )
 
     with tab2:
         st.caption("Frequency distribution of key numerical features")
-        c1, c2 = st.columns(2)
-        selected_features = numeric_cols_global[:2] if len(numeric_cols_global) >= 2 else numeric_cols_global
-        for i, col in enumerate([c1, c2][:len(selected_features)]):
-            feature = selected_features[i]
-            col.markdown(f"**{feature} Distribution**")
-            binned = pd.cut(df[feature], bins=10)
-            counts = binned.value_counts().sort_index()
-            counts.index = [f"{int(iv.left):,} - {int(iv.right):,}" for iv in counts.index]
-            chart_df = pd.DataFrame({feature: counts.values}, index=counts.index)
-            col.bar_chart(chart_df)
+        if not has_num:
+            st.info("No numeric columns available for distributions.")
+        else:
+            c1, c2 = st.columns(2)
+            selected_features = numeric_cols_global[:2] if len(numeric_cols_global) >= 2 else numeric_cols_global
+            for i, col in enumerate([c1, c2][:len(selected_features)]):
+                feature = selected_features[i]
+                col.markdown(f"**{feature} Distribution**")
+                binned = pd.cut(df[feature], bins=10)
+                counts = binned.value_counts().sort_index()
+                counts.index = [f"{int(iv.left):,} - {int(iv.right):,}" for iv in counts.index]
+                chart_df = pd.DataFrame({feature: counts.values}, index=counts.index)
+                col.bar_chart(chart_df)
 
     with tab3:
         st.subheader("🔗 Correlation Heatmap")
-        corr = df[numeric_cols_global].corr()
-        fig, ax = plt.subplots(figsize=(15, 10))
-        sns.heatmap(corr, annot=True, cmap="BrBG", linewidths=0.5, square=True, cbar_kws={"shrink": 0.8}, ax=ax)
-        ax.set_title("Correlation Matrix", fontsize=10)
-        st.pyplot(fig)
+        if not has_num:
+            st.info("No numeric columns to compute correlations.")
+        else:
+            corr = df[numeric_cols_global].corr()
+            if corr.size == 0:
+                st.info("Correlation matrix is empty.")
+            else:
+                fig, ax = plt.subplots(figsize=(15, 10))
+                sns.heatmap(corr, annot=True, cmap="BrBG", linewidths=0.5, square=True, cbar_kws={"shrink": 0.8}, ax=ax)
+                ax.set_title("Correlation Matrix", fontsize=10)
+                st.pyplot(fig)
 
-        st.markdown("---")
-        st.subheader("💡 Correlation Insights")
-        st.caption("Key findings from correlation analysis")
-        blocks = [
-            ("Strong Positive Correlation", "There are no strong positive correlations; values are close to zero, suggesting independence.", "#e8f0fe", "#1967d2"),
-            ("Asset-Income Relationship", "Income shows near-zero linear correlation with other features, implying weak linear relationships.", "#e6f4ea", "#137333"),
-            ("Independence Noted", "Low magnitudes across the board indicate features contribute largely independent information.", "#fef7e0", "#d39e00"),
-        ]
-        for t, txt, bg, tc in blocks:
-            st.markdown(
-                f"<div style='background:{bg}; padding:15px; border-radius:10px; margin-bottom:12px;'>"
-                f"<h5 style='color:{tc}; margin-bottom:5px;'>{t}</h5><p style='margin:0;'>{txt}</p></div>",
-                unsafe_allow_html=True
-            )
+                st.markdown("---")
+                st.subheader("💡 Correlation Insights")
+                st.caption("Key findings from correlation analysis")
+                blocks = [
+                    ("Strong Positive Correlation", "No strong positive correlations; values are close to zero, suggesting independence.", "#e8f0fe", "#1967d2"),
+                    ("Asset-Income Relationship", "Income shows near-zero linear correlation with other features, implying weak linear relationships.", "#e6f4ea", "#137333"),
+                    ("Independence Noted", "Low magnitudes across the board indicate features contribute largely independent information.", "#fef7e0", "#d39e00"),
+                ]
+                for t, txt, bg, tc in blocks:
+                    st.markdown(
+                        f"<div style='background:{bg}; padding:15px; border-radius:10px; margin-bottom:12px;'>"
+                        f"<h5 style='color:{tc}; margin-bottom:5px;'>{t}</h5><p style='margin:0;'>{txt}</p></div>",
+                        unsafe_allow_html=True
+                    )
 
     st.markdown("___")
     if st.button("📊 View Dataset Information"):
@@ -222,34 +264,25 @@ def model_page() -> None:
     test_auc_stored = best_result.get("test_auc", best_result.get("auc", 0.0))
     search_time_s   = best_result.get("cv_fit_time", best_result.get("training_time", 0.0))
 
-    # Scores for threshold tuning (safe) — higher = risk(Default=1)
+    # Scores for threshold tuning (higher = risk(Default=1))
     y_scores = _safe_scores(best_model, X_test)
 
-    # Historical approval rate from dataset (class 0 = approved)
+    # Historical approval rate
     try:
         historical_approval_rate = (df["Default"] == 0).mean() * 100 if "Default" in df.columns else None
     except Exception:
-        try:
-            hist_df = pd.read_csv("Loan_default.csv")
-            historical_approval_rate = (hist_df["Default"] == 0).mean() * 100 if "Default" in hist_df.columns else None
-        except Exception:
-            historical_approval_rate = None
+        historical_approval_rate = None
 
-    # ===== Threshold Tuning + Business Mode (no key collisions) =====
     st.markdown("#### Threshold Tuning")
 
-    # Build curve df if scores exist (used by Business Mode + plot)
     thr_df = None
     curve_df = None
     if y_scores is not None:
         thr_grid = np.linspace(0.05, 0.95, 91)
         curve_df = _approval_curve(y_test, y_scores, thr_grid)
         curve_df["ApprovalRatePct"] = (curve_df["ApprovalRate"] * 100).round(2)
-        thr_df = curve_df[["Threshold", "ApprovalRate"]].rename(
-            columns={"ApprovalRate": "Model Approval Rate"}
-        ).reset_index(drop=True)
+        thr_df = curve_df[["Threshold", "ApprovalRate"]].rename(columns={"ApprovalRate": "Model Approval Rate"}).reset_index(drop=True)
 
-    # --- Business Mode toggle (separate from manual slider key)
     if y_scores is None:
         st.toggle("Use Business Mode to set the approval threshold", value=False, disabled=True)
         st.caption("Business Mode unavailable (model does not expose scores).")
@@ -258,16 +291,14 @@ def model_page() -> None:
         use_business_mode = st.toggle(
             "Use Business Mode to set the approval threshold",
             value=(st.session_state.get("policy_mode", "business") == "business"),
-            help=("Automatically pick a policy threshold from your risk appetite "
-                  "using the model's test-set behavior.")
+            help=("Automatically pick a policy threshold from your risk appetite using the model's test-set behavior.")
         )
 
-    # Compute final policy_threshold (either from business mode or manual slider)
     if use_business_mode and thr_df is not None:
         TARGETS = {
-            "Aggressive (grow volume)": 0.60,   # ≥ 60% approvals
-            "Balanced (risk vs volume)": 0.45,  # ≥ 45% approvals
-            "Conservative (protect book)": 0.30 # ≥ 30% approvals
+            "Aggressive (grow volume)": 0.60,
+            "Balanced (risk vs volume)": 0.45,
+            "Conservative (protect book)": 0.30
         }
         appetite = st.radio(
             "Risk appetite",
@@ -287,8 +318,6 @@ def model_page() -> None:
             return float(df_.sort_values("Model Approval Rate", ascending=False).iloc[0]["Threshold"])
 
         policy_threshold = float(_pick_threshold_for_target(thr_df, target))
-
-        # persist non-widget state
         st.session_state["policy_threshold"] = float(policy_threshold)
         st.session_state["policy_mode"] = "business"
 
@@ -299,7 +328,6 @@ def model_page() -> None:
 
         st.caption("Business Mode picks the smallest threshold whose backtested approval rate meets your target.")
     else:
-        # Manual mode slider—DIFFERENT key to avoid session/key collisions
         policy_threshold = st.slider(
             "Decision threshold for 'Default' (positive class)",
             min_value=0.05, max_value=0.95, step=0.01,
@@ -318,7 +346,7 @@ def model_page() -> None:
         y_pred_thr = st.session_state.get("y_pred_best", best_result.get("y_pred"))
         approval_rate_now = None
 
-    # Metrics @ threshold (AUC from scores if available, else stored)
+    # Metrics @ threshold
     acc  = accuracy_score(y_test, y_pred_thr)
     bacc = balanced_accuracy_score(y_test, y_pred_thr)
     prec = precision_score(y_test, y_pred_thr, zero_division=0)
@@ -329,9 +357,9 @@ def model_page() -> None:
     cm   = confusion_matrix(y_test, y_pred_thr)
 
     model_type = best_name.split(" (")[0]
+    pt = float(st.session_state["policy_threshold"])
 
     # KPI cards
-    pt = float(st.session_state["policy_threshold"])
     st.markdown(
         f"""
         <div style="display:flex; gap:20px; flex-wrap:wrap; margin-top: 10px;">
@@ -362,50 +390,39 @@ def model_page() -> None:
     if approval_rate_now is not None and historical_approval_rate is not None:
         st.caption(f"**Current policy approval (model): {approval_rate_now:.1f}%** vs **Historical: {historical_approval_rate:.1f}%**")
 
-    # ===== Approval-rate curve & marker =====
+    # Approval-rate curve
     if y_scores is not None and curve_df is not None:
-        fig_curve = px.line(
-            curve_df, x="Threshold", y="ApprovalRatePct",
-            title="Model‑Predicted Approval Rate vs Policy Threshold",
-            labels={"ApprovalRatePct": "Approval Rate (%)"}
-        )
-        fig_curve.add_vline(x=pt, line_dash="dash",
-                            annotation_text=f"Current {pt:.2f}",
-                            annotation_position="top left")
+        fig_curve = px.line(curve_df, x="Threshold", y="ApprovalRatePct",
+                            title="Model-Predicted Approval Rate vs Policy Threshold",
+                            labels={"ApprovalRatePct": "Approval Rate (%)"})
+        fig_curve.add_vline(x=pt, line_dash="dash", annotation_text=f"Current {pt:.2f}", annotation_position="top left")
         if historical_approval_rate is not None:
             fig_curve.add_hline(y=historical_approval_rate, line_dash="dot",
                                 annotation_text=f"Historical {historical_approval_rate:.1f}%",
                                 annotation_position="bottom right")
         st.plotly_chart(fig_curve, use_container_width=True)
 
-        # quick default-rate readout at current threshold
         now_row = curve_df.iloc[(curve_df["Threshold"] - pt).abs().idxmin()]
         now_def_rate = now_row["DefaultRateAmongApproved"]
         if not np.isnan(now_def_rate):
             st.caption(
-                f"At threshold **{pt:.2f}**: "
-                f"Approval ≈ **{(now_row['ApprovalRate']*100):.1f}%**, "
+                f"At threshold **{pt:.2f}**: Approval ≈ **{(now_row['ApprovalRate']*100):.1f}%**, "
                 f"Default among approved ≈ **{now_def_rate*100:.1f}%**."
             )
     else:
-        st.info("Approval‑rate curve & Business Mode unavailable (model does not expose scores).")
+        st.info("Approval-rate curve & Business Mode unavailable (model does not expose scores).")
 
-    # ===== Confusion matrix & curves =====
-    st.markdown("### 🧮 Confusion Matrix") # for current threshold
-
+    # Confusion matrix (cards)
+    st.markdown("### 🧮 Confusion Matrix")
     try:
         tn, fp, fn, tp = cm.ravel()
     except Exception:
-        # fallback in case shape is unexpected
         tn, fp, fn, tp = int(cm[0, 0]), int(cm[0, 1]), int(cm[1, 0]), int(cm[1, 1])
 
     def _fmt(n):
-        try:
-            return f"{int(n):,}"
-        except Exception:
-            return str(n)
+        try: return f"{int(n):,}"
+        except Exception: return str(n)
 
-    #  colored cards + short explanations (loan context)
     cards_html = f"""
     <style>
     .cm-grid {{ display: flex; gap: 16px; flex-wrap: wrap; }}
@@ -429,7 +446,7 @@ def model_page() -> None:
       </div>
 
       <div class="cm-card" style="background:#fee2e2; border-color:#ef444422;">
-        <div class="cm-title">❌ False Positives (Over‑rejects)</div>
+        <div class="cm-title">❌ False Positives (Over-rejects)</div>
         <div class="cm-value">{_fmt(fp)}</div>
         <p class="cm-desc">Predicted <b>Default</b> but borrower was actually safe — revenue left on the table.</p>
       </div>
@@ -443,28 +460,22 @@ def model_page() -> None:
     """
     st.markdown(cards_html, unsafe_allow_html=True)
 
-    # quick rates to give more context
     total = tn + fp + fn + tp
-    if total > 0:
+    if total > 0 and y_scores is not None:
         st.caption(
             f"TPR/Recall: {(tp / (tp + fn)) * 100:.1f}% • "
             f"FPR: {(fp / (fp + tn)) * 100:.1f}% • "
-            f"Approval rate @ threshold: "
-            f"{((y_scores < policy_threshold).mean() * 100 if y_scores is not None else float('nan')):.1f}%"
+            f"Approval rate @ threshold: {(y_scores < pt).mean() * 100:.1f}%"
         )
 
-    # keep the detailed heatmap & curves in an expander
+    # Heatmap / ROC / PR
     with st.expander("📈 View Confusion Matrix Heatmap / ROC / PR"):
         fig, ax = plt.subplots()
-        sns.heatmap(
-            cm, annot=True, fmt="d", cmap="Blues",
-            xticklabels=["No Default", "Default"],
-            yticklabels=["No Default", "Default"],
-            cbar=False, ax=ax
-        )
-        ax.set_xlabel("Predicted");
-        ax.set_ylabel("Actual");
-        ax.set_title(f"Confusion Matrix @ {policy_threshold:.2f}")
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+                    xticklabels=["No Default", "Default"],
+                    yticklabels=["No Default", "Default"],
+                    cbar=False, ax=ax)
+        ax.set_xlabel("Predicted"); ax.set_ylabel("Actual"); ax.set_title(f"Confusion Matrix @ {pt:.2f}")
         st.pyplot(fig)
 
         if y_scores is not None:
@@ -472,23 +483,18 @@ def model_page() -> None:
             prec_curve, rec_curve, _ = precision_recall_curve(y_test, y_scores)
 
             fig2, ax2 = plt.subplots()
-            ax2.plot(fpr, tpr);
-            ax2.plot([0, 1], [0, 1], "--")
-            ax2.set_xlabel("FPR");
-            ax2.set_ylabel("TPR");
-            ax2.set_title("ROC Curve")
+            ax2.plot(fpr, tpr); ax2.plot([0, 1], [0, 1], "--")
+            ax2.set_xlabel("FPR"); ax2.set_ylabel("TPR"); ax2.set_title("ROC Curve")
             st.pyplot(fig2)
 
             fig3, ax3 = plt.subplots()
             ax3.plot(rec_curve, prec_curve)
-            ax3.set_xlabel("Recall");
-            ax3.set_ylabel("Precision");
-            ax3.set_title("Precision–Recall Curve")
+            ax3.set_xlabel("Recall"); ax3.set_ylabel("Precision"); ax3.set_title("Precision–Recall Curve")
             st.pyplot(fig3)
 
     st.markdown("___")
 
-    # ===== Model performance comparison table (stored test metrics) =====
+    # Comparison table
     st.markdown("### 🧮 Model Performance Comparison")
     rows = []
     for name, res in results_dict.items():
@@ -503,7 +509,7 @@ def model_page() -> None:
         })
     st.dataframe(pd.DataFrame(rows), use_container_width=True)
 
-    # ===== Feature importance =====
+    # Feature importance
     if feat_imp_df is not None and len(feat_imp_df):
         st.markdown("### 📉 Feature Importance (Top 10)")
         fig_imp = px.bar(feat_imp_df.head(10), x="Importance", y="Feature",
@@ -513,22 +519,19 @@ def model_page() -> None:
 
     st.markdown("___")
 
-    # ===== Tree visualization =====
+    # Tree visualization
     st.markdown("### 🌳 Model Visualization")
-
-    # Pick which trained model to visualize
     model_names = list(st.session_state["trained_models"].keys())
     selected_model_name = st.selectbox("Select a model to visualize", model_names)
     model_to_plot = st.session_state["trained_models"][selected_model_name]
 
-    # 2) Feature & class names (robust fallback)
+    # Feature names
     try:
         raw_feature_names = list(st.session_state["preprocessor"].get_feature_names_out())
     except Exception:
         n_features = st.session_state["X_train"].shape[1]
         raw_feature_names = [f"f{i}" for i in range(n_features)]
 
-    # Tidy up long names like "cat__Gender_Male" → "Gender_Male"
     def _clean_name(s: str) -> str:
         for pat in ("num__", "cat__", "remainder__", "preprocessor__"):
             s = s.replace(pat, "")
@@ -537,7 +540,6 @@ def model_page() -> None:
     feature_names = [_clean_name(x) for x in raw_feature_names]
     class_names = ["No Default", "Default"]
 
-    # 3) Controls
     c1, c2, c3 = st.columns([1, 1, 1])
     with c1:
         depth = st.slider("Max depth to display", 1, 8, value=3)
@@ -546,16 +548,13 @@ def model_page() -> None:
                                format_func=lambda x: f"{x[0]} × {x[1]}")
     with c3:
         show_impurity = st.checkbox("Show impurity", value=False)
-
     show_proportion = st.checkbox("Show class proportions", value=True, help="Displays class percentages per node")
     show_text_rules = st.checkbox("Show text rules (compact)", value=False, help="Readable if the tree depth is small")
 
-    # 4) Choose tree (for forests) or single DT
     from sklearn.tree import plot_tree as sk_plot_tree
     from sklearn.tree import export_text
 
     def _plot_single_tree(estimator, title: str):
-        # Align feature name length with the estimator
         n = getattr(estimator, "n_features_in_", len(feature_names))
         used_names = feature_names if len(feature_names) == n else [f"f{i}" for i in range(n)]
 
@@ -575,7 +574,7 @@ def model_page() -> None:
         ax.set_title(title)
         st.pyplot(fig, use_container_width=True)
 
-        if show_text_rules and depth <= 5:  # keep text view readable
+        if show_text_rules and depth <= 5:
             st.caption("Compact text rules (truncated by the selected max depth):")
             try:
                 rules = export_text(estimator, feature_names=used_names, max_depth=depth)
@@ -587,17 +586,8 @@ def model_page() -> None:
         if not getattr(model_to_plot, "estimators_", None):
             st.warning("This Random Forest has no fitted trees to visualize.")
         else:
-            # Helpful selectors for forests
             trees = model_to_plot.estimators_
             idx = st.slider("Select tree index", 0, len(trees) - 1, 0)
-            # Optional: pick a tree with median depth
-            with st.expander("Auto-select helpers"):
-                max_depths = [getattr(t.tree_, "max_depth", None) for t in trees]
-                if any(d is not None for d in max_depths):
-                    md_idx = int(np.argsort([d if d is not None else -1 for d in max_depths])[len(trees) // 2])
-                    if st.button(f"Use median-depth tree (index {md_idx}, depth≈{max_depths[md_idx]})"):
-                        idx = md_idx
-
             tree = trees[idx]
             _plot_single_tree(tree, f"Random Forest — Tree #{idx}")
     else:
@@ -606,26 +596,23 @@ def model_page() -> None:
         else:
             st.warning("⚠️ This model type cannot be visualized as a tree.")
 
-
 def prediction():
     if "preprocessor" not in st.session_state or "trained_models" not in st.session_state:
         st.warning("⚠️ Please train at least one model before using the prediction page.")
         return
 
-    # --- Current threshold from session (risk side)
     current_thr = float(st.session_state.get("policy_threshold", 0.50))
 
     st.markdown("<h2 class='section-title'>📝 Loan Application Form</h2>", unsafe_allow_html=True)
     st.caption("This page applies the current policy threshold from the Model page.")
     st.metric("Current Policy Threshold (risk)", f"{current_thr:.2f}")
 
-    # Schema for form
+    # Form schema from original CSV
     df_meta = pd.read_csv("Loan_default.csv")
     X_meta = df_meta.drop(columns=["LoanID", "Default"], errors="ignore")
     numeric_cols = X_meta.select_dtypes(include=["int64", "float64"]).columns.tolist()
     cat_cols = X_meta.select_dtypes(include="object").columns.tolist()
 
-    # friendly labels
     friendly_labels = {
         "Income": "Monthly Income (local currency)",
         "CreditScore": "Credit Score",
@@ -647,7 +634,6 @@ def prediction():
         "HasMortgage": "HasMortgage",
     }
 
-    # saved stats from preprocessing (medians for defaults, min/max for guardrails)
     med = st.session_state.get("medians", {})
     mins = st.session_state.get("mins", {})
     maxs = st.session_state.get("maxs", {})
@@ -663,16 +649,11 @@ def prediction():
                     pass
         return flags
 
-    # Local utility: safe probabilities built on helper._safe_scores
     def _safe_probas(model, X):
-        """
-        Returns (approved_prob, risk_prob) with risk_prob in [0,1].
-        Prefers predict_proba; otherwise builds from _safe_scores.
-        If all fails, returns (None, None).
-        """
+        """Return (approved_prob, risk_prob) with risk in [0,1]."""
         try:
             proba = model.predict_proba(X)[0]
-            return float(proba[0]), float(proba[1])  # [Approved, Default]
+            return float(proba[0]), float(proba[1])
         except Exception:
             scores = _safe_scores(model, X)
             if scores is not None:
@@ -681,11 +662,8 @@ def prediction():
         return None, None
 
     with st.form("loan_form"):
-        model_choice = st.selectbox(
-            "Select a model for detailed analysis",
-            options=list(st.session_state["trained_models"].keys()),
-            index=0
-        )
+        model_choice = st.selectbox("Select a model for detailed analysis",
+                                    options=list(st.session_state["trained_models"].keys()), index=0)
 
         col1, col2 = st.columns(2)
         user_input = {}
@@ -693,9 +671,7 @@ def prediction():
         with col1:
             for col in cat_cols[: len(cat_cols) // 2]:
                 label = friendly_labels.get(col, col.replace("_", " "))
-                options = sorted(df_meta[col].dropna().unique().tolist())
-                if not options:
-                    options = ["N/A"]
+                options = sorted(df_meta[col].dropna().unique().tolist()) or ["N/A"]
                 user_input[col] = st.selectbox(label, options=options, key=f"cat1_{col}")
 
             for col in numeric_cols[: len(numeric_cols) // 2]:
@@ -709,9 +685,7 @@ def prediction():
         with col2:
             for col in cat_cols[len(cat_cols) // 2:]:
                 label = friendly_labels.get(col, col.replace("_", " "))
-                options = sorted(df_meta[col].dropna().unique().tolist())
-                if not options:
-                    options = ["N/A"]
+                options = sorted(df_meta[col].dropna().unique().tolist()) or ["N/A"]
                 user_input[col] = st.selectbox(label, options=options, key=f"cat2_{col}")
 
             for col in numeric_cols[len(numeric_cols) // 2:]:
@@ -727,12 +701,11 @@ def prediction():
     if not submitted:
         return
 
-    # OOD warning (soft)
+    # OOD warning
     numeric_subset = {k: v for k, v in user_input.items() if k in mins}
     ood = find_ood({k: user_input[k] for k in numeric_subset}, mins, maxs)
     if ood:
-        st.warning(
-            "Some values are **outside the training range**: " + ", ".join(ood) + ". Prediction may be less reliable.")
+        st.warning("Some values are **outside the training range**: " + ", ".join(ood) + ". Prediction may be less reliable.")
 
     # Transform input
     input_df = pd.DataFrame([user_input])
@@ -743,28 +716,20 @@ def prediction():
         X_dense = np.asarray(X_trans)
     feature_names = st.session_state["preprocessor"].get_feature_names_out()
 
-    # Compare across all models (uses safe probas)
+    # Compare across all models
     results_table = []
     for name, mdl in st.session_state["trained_models"].items():
         approved_prob, risk_prob = _safe_probas(mdl, X_dense)
-        if approved_prob is None:  # fallback to hard class if everything else fails
+        if approved_prob is None:
             try:
                 pred_class = int(mdl.predict(X_dense)[0])
                 results_table.append({
-                    "Model": name,
-                    "Approval Probability": "n/a",
-                    "Risk Probability": "n/a",
+                    "Model": name, "Approval Probability": "n/a", "Risk Probability": "n/a",
                     "Predicted Class": "Approved" if pred_class == 0 else "Not Approved"
                 })
-                continue
             except Exception:
-                results_table.append({
-                    "Model": name,
-                    "Approval Probability": "n/a",
-                    "Risk Probability": "n/a",
-                    "Predicted Class": "n/a"
-                })
-                continue
+                results_table.append({"Model": name, "Approval Probability": "n/a", "Risk Probability": "n/a", "Predicted Class": "n/a"})
+            continue
 
         pred_class = 0 if (risk_prob < current_thr) else 1
         results_table.append({
@@ -778,13 +743,13 @@ def prediction():
     st.caption("All models scored on this application using the current policy threshold.")
     st.dataframe(pd.DataFrame(results_table), use_container_width=True)
 
-    # Selected model decision (policy applies here)
+    # Selected model decision
     model = st.session_state["trained_models"][model_choice]
     approved_prob, risk_prob = _safe_probas(model, X_dense)
 
-    if approved_prob is None:  # extreme fallback: use hard class only
+    if approved_prob is None:
         pred_class = int(model.predict(X_dense)[0])
-        final_label = pred_class  # 0 approved, 1 not approved
+        final_label = pred_class
         confidence = None
     else:
         final_label = 0 if (risk_prob < current_thr) else 1
@@ -796,10 +761,9 @@ def prediction():
         st.markdown(f"<div class='result-card approved'>Loan Approved ✅{conf_txt}</div>", unsafe_allow_html=True)
     else:
         conf_txt = "" if confidence is None else f"<br><span>{confidence * 100:.1f}% confidence (policy risk ≥ {current_thr:.2f})</span>"
-        st.markdown(f"<div class='result-card declined'>Loan Not Approved – Risk of Default ⚠️{conf_txt}</div>",
-                    unsafe_allow_html=True)
+        st.markdown(f"<div class='result-card declined'>Loan Not Approved – Risk of Default ⚠️{conf_txt}</div>", unsafe_allow_html=True)
 
-    # Contributions (tree-only)
+    # Tree contributions (treeinterpreter)
     is_tree_model = isinstance(model, (DecisionTreeClassifier, RandomForestClassifier))
     if is_tree_model:
         pred_idx = 0 if final_label == 0 else 1
@@ -825,7 +789,7 @@ def prediction():
     else:
         st.info("Feature contribution chart is available for tree models.")
 
-# ----------------- router -----------------
+# ----------------- Router -----------------
 def main() -> None:
     load_css("styles.css")
     with st.sidebar:
@@ -859,7 +823,6 @@ def main() -> None:
     elif selected_page == "Model Training & Evaluation":
         model_page()
 
-    # Team list footer
     st.sidebar.markdown("___")
     st.sidebar.selectbox(
         "Tap to View All Group Members",
@@ -871,8 +834,4 @@ def main() -> None:
     )
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        st.error("Unhandled exception occurred. See details below (temporary debug).")
-        st.code("".join(traceback.format_exc()), language="python")
+    main()

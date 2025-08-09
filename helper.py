@@ -3,6 +3,7 @@ import time
 from time import perf_counter
 from typing import Any, Dict, Tuple, Optional
 
+import warnings
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -17,8 +18,12 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    roc_auc_score, confusion_matrix, classification_report
+    roc_auc_score, confusion_matrix, classification_report, make_scorer
 )
+from sklearn.exceptions import UndefinedMetricWarning
+
+# Silence undefined-metric spam during CV when a fold predicts one class
+warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
 
 # ---------- UI: Dataset info ----------
 def show_dataset_info(df: pd.DataFrame) -> None:
@@ -80,14 +85,10 @@ def show_dataset_info(df: pd.DataFrame) -> None:
 
 # ---------- Preprocessing ----------
 def _make_onehot_dense() -> OneHotEncoder:
-    """
-    Return a dense-output OneHotEncoder compatible across sklearn versions.
-    """
+    """Return a dense-output OneHotEncoder compatible across sklearn versions."""
     try:
-        # sklearn >= 1.2
         return OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     except TypeError:
-        # older sklearn
         return OneHotEncoder(handle_unknown="ignore", sparse=False)
 
 def run_preprocessing(df: pd.DataFrame) -> None:
@@ -99,7 +100,6 @@ def run_preprocessing(df: pd.DataFrame) -> None:
         st.info("Preprocessing has already been done.")
         return
 
-    # Safe copy
     data = df.copy()
 
     # Drop ID + target for X; keep y
@@ -115,23 +115,17 @@ def run_preprocessing(df: pd.DataFrame) -> None:
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    # Store numeric distribution info for realistic defaults on the form
+    # Numeric distribution info for realistic defaults on the form
     num_medians = X_train[numeric_cols].median(numeric_only=True).to_dict()
     num_mins = X_train[numeric_cols].min(numeric_only=True).to_dict()
     num_maxs = X_train[numeric_cols].max(numeric_only=True).to_dict()
 
     # Transformers
     numeric_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="median")),
-            ("scaler", StandardScaler()),
-        ]
+        steps=[("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]
     )
     categorical_transformer = Pipeline(
-        steps=[
-            ("imputer", SimpleImputer(strategy="most_frequent")),
-            ("encoder", _make_onehot_dense()),
-        ]
+        steps=[("imputer", SimpleImputer(strategy="most_frequent")), ("encoder", _make_onehot_dense())]
     )
 
     preprocessor = ColumnTransformer(
@@ -147,7 +141,6 @@ def run_preprocessing(df: pd.DataFrame) -> None:
     X_train_transformed = preprocessor.fit_transform(X_train)
     X_test_transformed = preprocessor.transform(X_test)
 
-    # Persist in session
     st.session_state.update(
         {
             "preprocessing_done": True,
@@ -251,7 +244,7 @@ def render_preprocessing_steps() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-# ---------- Threshold / score utilities (for policy simulation & plots) ----------
+# ---------- Threshold / score utilities ----------
 def _safe_scores(model, X):
     """Return scores in [0,1] where higher = risk(Default=1)."""
     try:
@@ -268,13 +261,10 @@ def _approval_curve(y_true, scores, thr_grid):
     """For each threshold, compute approval rate (scores<thr) and default rate among approved."""
     out = []
     for thr in thr_grid:
-        approved = scores < thr  # approve when predicted risk is below policy threshold
+        approved = scores < thr
         approved_cnt = int(approved.sum())
         appr_rate = approved_cnt / len(scores)
-        if approved_cnt == 0:
-            def_rate = np.nan
-        else:
-            def_rate = float(((y_true == 1) & approved).sum()) / approved_cnt
+        def_rate = np.nan if approved_cnt == 0 else float(((y_true == 1) & approved).sum()) / approved_cnt
         out.append((thr, appr_rate, def_rate))
     return pd.DataFrame(out, columns=["Threshold", "ApprovalRate", "DefaultRateAmongApproved"])
 
@@ -283,13 +273,11 @@ def _recommend_threshold_by_cap(y_true, scores, max_default_rate_among_approved:
     curve = _approval_curve(y_true, scores, grid)
     feasible = curve[curve["DefaultRateAmongApproved"] <= max_default_rate_among_approved].copy()
     if feasible.empty:
-        # fallback: closest-to-cap among those with approvals
         feasible = curve.dropna(subset=["DefaultRateAmongApproved"]).copy()
         if feasible.empty:
-            return 0.50, None  # ultimate fallback
+            return 0.50, None
         idx = (feasible["DefaultRateAmongApproved"] - max_default_rate_among_approved).abs().idxmin()
         return float(feasible.loc[idx, "Threshold"]), feasible
-    # pick feasible point with max approval rate; tie-breaker uses lowest default rate
     idx = feasible.sort_values(["ApprovalRate", "DefaultRateAmongApproved"], ascending=[False, True]).index[0]
     return float(feasible.loc[idx, "Threshold"]), feasible
 
@@ -311,12 +299,8 @@ def train_and_evaluate_models(
 ) -> Tuple[
     Dict[str, Any], str, Any, np.ndarray, np.ndarray, Optional[pd.DataFrame], Optional[str], Optional[float]
 ]:
-    """
-    Train Decision Tree & Random Forest via randomized CV; evaluate on test set.
-    Returns an 8-tuple exactly as expected by app.py.
-    """
+    """Train Decision Tree & Random Forest via randomized CV; evaluate on test set."""
 
-    # tiny log helpers
     def step(label: str):
         if on_step:
             on_step(f"▶️ {label}…")
@@ -324,9 +308,8 @@ def train_and_evaluate_models(
 
     def done(token):
         label, t0 = token
-        elapsed = perf_counter() - t0
         if on_step:
-            on_step(f"✅ {label} ({elapsed:.2f}s)")
+            on_step(f"✅ {label} ({perf_counter() - t0:.2f}s)")
 
     results_dict: Dict[str, Any] = {}
     best_name: Optional[str] = None
@@ -359,7 +342,12 @@ def train_and_evaluate_models(
         ("Random Forest", RandomForestClassifier(random_state=42, n_jobs=-1), rf_param_dist),
     ]
 
-    scoring = {"f1": "f1", "precision": "precision", "recall": "recall", "roc_auc": "roc_auc"}
+    scoring = {
+        "f1":        make_scorer(f1_score, zero_division=0),
+        "precision": make_scorer(precision_score, zero_division=0),
+        "recall":    make_scorer(recall_score, zero_division=0),
+        "roc_auc":   "roc_auc",
+    }
 
     tok = step("Randomized CV on training data")
     for label, base_model, param_dist in model_specs:
@@ -390,7 +378,7 @@ def train_and_evaluate_models(
                 calibrated_est = CalibratedClassifierCV(base_estimator=best_est, method=method, cv=3)
                 calibrated_est.fit(X_train, y_train)
             except Exception:
-                calibrated_est = best_est  # fallback if anything fails
+                calibrated_est = best_est  # fallback
 
         # Honest hold-out evaluation
         y_pred = calibrated_est.predict(X_test)
@@ -409,8 +397,7 @@ def train_and_evaluate_models(
         # Inference timing (ms/sample)
         t_inf0 = perf_counter()
         _ = calibrated_est.predict(X_test)
-        t_inf = perf_counter() - t_inf0
-        per_sample_ms = (t_inf / len(X_test)) * 1000
+        per_sample_ms = ((perf_counter() - t_inf0) / len(X_test)) * 1000
 
         name = f"{label} (best={search.best_params_})"
         results_dict[name] = {
@@ -428,13 +415,6 @@ def train_and_evaluate_models(
             "inference_ms_per_sample": per_sample_ms,
         }
 
-        if on_step:
-            on_step(
-                f"   • {name} — CV-{refit_metric.upper()}={search.best_score_:.3f}, "
-                f"Test F1={test_f1:.3f}, AUC={test_auc:.3f}, inf≈{per_sample_ms:.2f} ms/sample"
-            )
-
-        # Choose global best by test F1
         if (best_model is None) or (test_f1 > results_dict.get(best_name, {}).get("test_f1", -1)):
             best_name = name
             best_model = calibrated_est
@@ -442,7 +422,6 @@ def train_and_evaluate_models(
             cm_best = cm
             infer_time_ms_per_sample = per_sample_ms
 
-            # Feature importances for tree models
             try:
                 importances = getattr(search.best_estimator_, "feature_importances_", None)
                 if importances is not None:
