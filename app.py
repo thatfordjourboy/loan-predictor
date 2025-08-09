@@ -32,6 +32,12 @@ from helper import (
     _recommend_threshold_by_cap,
 )
 
+import logging, sys, traceback
+logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+import streamlit as st
+st.set_option("client.showErrorDetails", True)
+
+
 # ----------------- page config -----------------
 st.set_page_config(layout="wide", page_title="Loan Predict@G5", initial_sidebar_state="auto")
 
@@ -865,4 +871,8 @@ def main() -> None:
     )
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        st.error("Unhandled exception occurred. See details below (temporary debug).")
+        st.code("".join(traceback.format_exc()), language="python")
