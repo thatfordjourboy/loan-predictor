@@ -1,4 +1,14 @@
-import os, sys, logging
+import os, sys, logging, pathlib
+from datetime import datetime
+
+os.environ.setdefault("HOME", "/tmp")
+cfg_dir = pathlib.Path(os.environ["HOME"]) / ".streamlit"
+cfg_dir.mkdir(parents=True, exist_ok=True)
+(cfg_dir / "config.toml").write_text(
+    "browser.gatherUsageStats = false\n"
+    "theme.base = 'light'\n"
+)
+# -------------------------------------------
 from datetime import datetime
 
 import matplotlib.pyplot as plt
@@ -30,7 +40,6 @@ from helper import (
     _approval_curve,
 )
 
-import os
 os.environ["OMP_NUM_THREADS"]="1"
 os.environ["OPENBLAS_NUM_THREADS"]="1"
 os.environ["MKL_NUM_THREADS"]="1"
