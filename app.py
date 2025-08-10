@@ -63,21 +63,20 @@ def load_css(css_file: str) -> None:
 # ----------------- Data cache & load -----------------
 @st.cache_data
 def load_data(path: str) -> pd.DataFrame:
-    return pd.read_csv(path)
+    # Minimal, robust parsing: handle thousands separators and common NA tokens.
+    return pd.read_csv(
+        path,
+        low_memory=False,
+        thousands=",",
+        na_values=["", "NA", "N/A"]
+    )
 
-df = load_data("Loan_default.csv")
+CSV_PATH = "Loan_default.csv"
+if not pathlib.Path(CSV_PATH).exists():
+    st.error(f"Required data file not found: {CSV_PATH}. Place it in the repo root.")
+    st.stop()
 
-# Coerce numeric-looking object columns, without the FutureWarning
-def _coerce_numeric(col: pd.Series) -> pd.Series:
-    if col.dtype != "object":
-        return col
-    s = col.astype(str).str.replace(r"[,\s]", "", regex=True)
-    try:
-        return pd.to_numeric(s)  # will raise if mixed => we keep original text
-    except Exception:
-        return col
-
-df = df.apply(_coerce_numeric)
+df = load_data(CSV_PATH)
 
 # ----------------- Global state defaults -----------------
 if "policy_threshold" not in st.session_state:
@@ -107,7 +106,7 @@ def data_overview() -> None:
     has_num = len(numeric_cols_global) > 0
 
     try:
-        file_timestamp = os.path.getmtime("Loan_default.csv")
+        file_timestamp = os.path.getmtime(CSV_PATH)
         last_updated = datetime.fromtimestamp(file_timestamp).strftime("%b %Y")
     except Exception:
         last_updated = "N/A"
@@ -629,7 +628,7 @@ def prediction():
     st.metric("Current Policy Threshold (risk)", f"{current_thr:.2f}")
 
     # Form schema from original CSV
-    df_meta = pd.read_csv("Loan_default.csv")
+    df_meta = pd.read_csv(CSV_PATH, low_memory=False, thousands=",", na_values=["", "NA", "N/A"])
     X_meta = df_meta.drop(columns=["LoanID", "Default"], errors="ignore")
     numeric_cols = X_meta.select_dtypes(include=["int64", "float64"]).columns.tolist()
     cat_cols = X_meta.select_dtypes(include="object").columns.tolist()
